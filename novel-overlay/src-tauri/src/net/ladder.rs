@@ -143,9 +143,12 @@ pub type TierFuture<'a> = Pin<Box<dyn Future<Output = TierOutcome> + Send + 'a>>
 pub trait TierSource: Send + Sync {
     fn tier(&self) -> Tier;
 
+    /// `body` 为 `Some` 时用 POST 发送（搜索表单是 `method="post"` 的站点需要）。
+    /// 其余语义与 GET 完全一致：同样的闸门、限速与熔断。
     fn fetch<'a>(
         &'a self,
         url: &'a str,
+        body: Option<&'a str>,
         headers: &'a [(String, String)],
         challenge_markers: &'a [String],
     ) -> TierFuture<'a>;
@@ -183,10 +186,21 @@ impl Ladder {
         headers: &[(String, String)],
         challenge_markers: &[String],
     ) -> Result<Fetched> {
+        self.fetch_ex(url, None, headers, challenge_markers).await
+    }
+
+    /// 带请求体的版本；`body` 为 `Some` 时各层用 POST 发送。
+    pub async fn fetch_ex(
+        &self,
+        url: &str,
+        body: Option<&str>,
+        headers: &[(String, String)],
+        challenge_markers: &[String],
+    ) -> Result<Fetched> {
         let mut attempts = Vec::new();
 
         for tier in &self.tiers {
-            match tier.fetch(url, headers, challenge_markers).await {
+            match tier.fetch(url, body, headers, challenge_markers).await {
                 TierOutcome::Fetched { html } => {
                     attempts.push(TierAttempt::new(tier.tier(), AttemptKind::Hit, ""));
                     log::debug!("{url} 由 {} 取到", tier.tier().label());
@@ -230,6 +244,21 @@ impl PageSource for Ladder {
             self.get_page(url, headers, challenge_markers)
                 .await
                 .map(|page| page.html)
+        })
+    }
+
+    /// POST 走与 GET 完全相同的阶梯：闸门、限速、熔断一个不少。
+    fn post_text<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a str,
+        headers: &'a [(String, String)],
+        challenge_markers: &'a [String],
+    ) -> TextFuture<'a> {
+        Box::pin(async move {
+            self.fetch_ex(url, Some(body), headers, challenge_markers)
+                .await
+                .map(|fetched| fetched.html)
         })
     }
 
@@ -296,6 +325,7 @@ impl TierSource for UnconfiguredTier {
     fn fetch<'a>(
         &'a self,
         _url: &'a str,
+        _body: Option<&'a str>,
         _headers: &'a [(String, String)],
         _challenge_markers: &'a [String],
     ) -> TierFuture<'a> {
@@ -469,6 +499,7 @@ impl TierSource for PublicWebTier {
     fn fetch<'a>(
         &'a self,
         url: &'a str,
+        body: Option<&'a str>,
         headers: &'a [(String, String)],
         challenge_markers: &'a [String],
     ) -> TierFuture<'a> {
@@ -499,7 +530,11 @@ impl TierSource for PublicWebTier {
                 };
             }
 
-            let response = match self.transport.get(url, headers).await {
+            let response = match body {
+                Some(body) => self.transport.post(url, body, headers).await,
+                None => self.transport.get(url, headers).await,
+            };
+            let response = match response {
                 Ok(response) => response,
                 Err(error) => {
                     self.breaker.record_failure();

@@ -30,13 +30,20 @@ impl<'a> SourceEngine<'a> {
             js: self.js,
             base_url: &source.book_source_url,
         };
-        let search_url = build_search_url(source, keyword, &base).await?;
-        let html = self.pages.get_text(&search_url, &headers, markers).await?;
+        let request = build_search_request(source, keyword, &base).await?;
+        let html = match request.body.as_deref() {
+            Some(body) => {
+                self.pages
+                    .post_text(&request.url, body, &headers, markers)
+                    .await?
+            }
+            None => self.pages.get_text(&request.url, &headers, markers).await?,
+        };
 
         // 字段规则相对搜索结果页求值，baseUrl 指向该页。
         let page = EvalEnv {
             js: self.js,
-            base_url: &search_url,
+            base_url: &request.url,
         };
 
         let list_chain = RuleChain::parse(&source.rule_search.book_list)?;
@@ -57,15 +64,15 @@ impl<'a> SourceEngine<'a> {
             }
             let raw_book_url = pick_element(&item, book_url_chain.as_ref(), &page).await?;
             let book_url = if raw_book_url.is_empty() {
-                search_url.clone()
+                request.url.clone()
             } else {
-                resolve(&search_url, &raw_book_url).unwrap_or(raw_book_url)
+                resolve(&request.url, &raw_book_url).unwrap_or(raw_book_url)
             };
             let raw_cover = pick_element(&item, cover_chain.as_ref(), &page).await?;
             let cover_url = if raw_cover.is_empty() {
                 String::new()
             } else {
-                resolve(&search_url, &raw_cover).unwrap_or(raw_cover)
+                resolve(&request.url, &raw_cover).unwrap_or(raw_cover)
             };
             results.push(SearchBook {
                 source_id: 0,
@@ -204,34 +211,64 @@ fn first_non_empty(values: Vec<String>) -> String {
         .unwrap_or_default()
 }
 
-async fn build_search_url(
+/// 拼好的搜索请求：地址 + 可选的 POST 请求体。
+#[derive(Debug)]
+struct SearchRequest {
+    url: String,
+    /// `Some` 表示用 POST 发送（书源配置了 `searchBody`）。
+    body: Option<String>,
+}
+
+async fn build_search_request(
     source: &BookSource,
     keyword: &str,
     env: &EvalEnv<'_>,
-) -> Result<String> {
+) -> Result<SearchRequest> {
     let base = Url::parse(&source.book_source_url)
         .with_context(|| format!("书源地址非法: {}", source.book_source_url))?;
     // `{{gbk:key}}`：老站（笔趣阁系）按 GBK 匹配关键词，UTF-8 编码过去是「查无此书」。
+    // `{{urlencode:key}}`：POST 表单体里中文必须百分号编码，原样 UTF-8 字节会被
+    // 服务端当「没有输入」（表现为永远返回「请输入搜索词」的空结果页）。
     // 先替换带花括号的完整写法，再替换单花括号写法，避免残留 `}`。
-    let template = if source.search_url.contains("gbk:key") {
-        let encoded = encode_query_component_gbk(keyword);
-        source
-            .search_url
-            .replace("{{gbk:key}}", &encoded)
-            .replace("{gbk:key}", &encoded)
-    } else if source.search_url.contains("{{key}}") {
-        source.search_url.replace("{{key}}", keyword)
-    } else if source.search_url.contains("{key}") {
-        source.search_url.replace("{key}", keyword)
-    } else {
-        source.search_url.replace("searchKey", keyword)
+    let substitute = |template: &str| -> String {
+        if template.contains("urlencode:key") {
+            let encoded = form_urlencode_utf8(keyword);
+            return template
+                .replace("{{urlencode:key}}", &encoded)
+                .replace("{urlencode:key}", &encoded);
+        }
+        if template.contains("gbk:key") {
+            let encoded = encode_query_component_gbk(keyword);
+            template
+                .replace("{{gbk:key}}", &encoded)
+                .replace("{gbk:key}", &encoded)
+        } else if template.contains("{{key}}") {
+            template.replace("{{key}}", keyword)
+        } else if template.contains("{key}") {
+            template.replace("{key}", keyword)
+        } else {
+            template.replace("searchKey", keyword)
+        }
     };
-    let template = render_js_blocks(&template, env, keyword).await?;
+    let url_template = substitute(&source.search_url);
+    let url_template = render_js_blocks(&url_template, env, keyword).await?;
     let url = base
-        .join(&template)
-        .or_else(|_| Url::parse(&template))
+        .join(&url_template)
+        .or_else(|_| Url::parse(&url_template))
         .with_context(|| format!("无法拼接搜索地址: {}", source.search_url))?;
-    Ok(url.to_string())
+
+    // 请求体也走同一套占位符替换与 js 求值。
+    let body = match source.search_body.as_deref() {
+        None => None,
+        Some(template) => {
+            let substituted = substitute(template);
+            Some(render_js_blocks(&substituted, env, keyword).await?)
+        }
+    };
+    Ok(SearchRequest {
+        url: url.to_string(),
+        body,
+    })
 }
 
 /// 把关键词按 GBK 编码再做百分号编码，供 `{{gbk:key}}` 使用。
@@ -240,8 +277,18 @@ async fn build_search_url(
 /// 不必为此报错打断整次搜索。
 fn encode_query_component_gbk(keyword: &str) -> String {
     let (bytes, _, _) = encoding_rs::GBK.encode(keyword);
+    percent_encode(&bytes)
+}
+
+/// UTF-8 字节的表单百分号编码，供 `{{urlencode:key}}` 使用。
+fn form_urlencode_utf8(keyword: &str) -> String {
+    percent_encode(keyword.as_bytes())
+}
+
+/// 非 URL 保留字符逐字节转 `%XX`。
+fn percent_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 3);
-    for byte in bytes.iter() {
+    for byte in bytes {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(*byte as char);
@@ -306,6 +353,7 @@ mod tests {
             book_source_url: ROOT.to_string(),
             enabled: true,
             search_url: search_url.to_string(),
+            search_body: None,
             rule_search: RuleSearch {
                 book_list: "css:div.item".to_string(),
                 name: None,
@@ -337,13 +385,15 @@ mod tests {
     #[tokio::test]
     async fn search_url_substitutes_keyword_placeholder() {
         let js = QuickJsEvaluator::spawn().unwrap();
-        let url = build_search_url(&source("/search?q={{key}}"), "斗破苍穹", &env(&js))
+        let request = build_search_request(&source("/search?q={{key}}"), "斗破苍穹", &env(&js))
             .await
             .unwrap();
+        assert!(request.body.is_none());
         // `Url::join` 会对中文做百分号编码，这里只断言结构与编码结果。
         assert!(
-            url.starts_with("https://www.example.com/search?q=%E6%96%97"),
-            "实际地址: {url}"
+            request.url.starts_with("https://www.example.com/search?q=%E6%96%97"),
+            "实际地址: {}",
+            request.url
         );
     }
 
@@ -351,7 +401,7 @@ mod tests {
     #[tokio::test]
     async fn search_url_encodes_keyword_as_gbk() {
         let js = QuickJsEvaluator::spawn().unwrap();
-        let url = build_search_url(
+        let request = build_search_request(
             &source("/search.php?searchkey={{gbk:key}}"),
             "斗破苍穹",
             &env(&js),
@@ -359,18 +409,49 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            url.ends_with("searchkey=%B6%B7%C6%C6%B2%D4%F1%B7"),
-            "实际地址: {url}"
+            request
+                .url
+                .ends_with("searchkey=%B6%B7%C6%C6%B2%D4%F1%B7"),
+            "实际地址: {}",
+            request.url
         );
 
-        let single = build_search_url(
-            &source("/s?q={gbk:key}"),
-            "斗破苍穹",
-            &env(&js),
-        )
-        .await
-        .unwrap();
-        assert!(single.ends_with("q=%B6%B7%C6%C6%B2%D4%F1%B7"), "实际地址: {single}");
+        let single = build_search_request(&source("/s?q={gbk:key}"), "斗破苍穹", &env(&js))
+            .await
+            .unwrap();
+        assert!(
+            single.url.ends_with("q=%B6%B7%C6%C6%B2%D4%F1%B7"),
+            "实际地址: {}",
+            single.url
+        );
+    }
+
+    /// 配置了 `searchBody` 即用 POST，且请求体里的占位符同样会被替换。
+    #[tokio::test]
+    async fn search_body_is_substituted_and_marks_post() {
+        let js = QuickJsEvaluator::spawn().unwrap();
+        let mut src = source("/search.html");
+        src.search_body = Some("s={{key}}&token=<js>'tk'</js>".to_string());
+
+        let request = build_search_request(&src, "斗破苍穹", &env(&js))
+            .await
+            .unwrap();
+        assert_eq!(request.url, "https://www.example.com/search.html");
+        assert_eq!(request.body.as_deref(), Some("s=斗破苍穹&token=tk"));
+    }
+
+    /// POST 表单体里的中文必须百分号编码：原样 UTF-8 字节会被服务端当成
+    /// 「没有输入」，永远返回空结果页。
+    #[tokio::test]
+    async fn search_body_supports_urlencode_placeholder() {
+        let js = QuickJsEvaluator::spawn().unwrap();
+        let mut src = source("/search.html");
+        src.search_body = Some("s={{urlencode:key}}".to_string());
+
+        let request = build_search_request(&src, "斗破苍穹", &env(&js))
+            .await
+            .unwrap();
+        assert_eq!(request.body.as_deref(), Some("s=%E6%96%97%E7%A0%B4%E8%8B%8D%E7%A9%B9"));
     }
 
     #[tokio::test]
@@ -378,8 +459,14 @@ mod tests {
         let js = QuickJsEvaluator::spawn().unwrap();
         let env = env(&js);
         for template in ["/s?k={key}", "/s?k=searchKey"] {
-            let url = build_search_url(&source(template), "abc", &env).await.unwrap();
-            assert!(url.contains("k=abc"), "模板 {template} 产出 {url}");
+            let request = build_search_request(&source(template), "abc", &env)
+                .await
+                .unwrap();
+            assert!(
+                request.url.contains("k=abc"),
+                "模板 {template} 产出 {}",
+                request.url
+            );
         }
     }
 
@@ -388,12 +475,16 @@ mod tests {
     async fn search_url_runs_embedded_js_signature() {
         let js = QuickJsEvaluator::spawn().unwrap();
         let template = "/search?q={{key}}&sign=<js>md5(key + '|' + baseUrl)</js>";
-        let url = build_search_url(&source(template), "斗破苍穹", &env(&js))
+        let request = build_search_request(&source(template), "斗破苍穹", &env(&js))
             .await
             .unwrap();
 
         let expected = crypto::md5_hex(&format!("斗破苍穹|{ROOT}"));
-        assert!(url.contains(&format!("sign={expected}")), "实际地址: {url}");
+        assert!(
+            request.url.contains(&format!("sign={expected}")),
+            "实际地址: {}",
+            request.url
+        );
     }
 
     /// 签名脚本能看到 `baseUrl`，因此站点换域名时不用改规则。
@@ -401,16 +492,20 @@ mod tests {
     async fn embedded_js_can_read_base_url() {
         let js = QuickJsEvaluator::spawn().unwrap();
         let template = "/s?host=<js>document.location.host</js>";
-        let url = build_search_url(&source(template), "x", &env(&js))
+        let request = build_search_request(&source(template), "x", &env(&js))
             .await
             .unwrap();
-        assert!(url.contains("host=www.example.com"), "实际地址: {url}");
+        assert!(
+            request.url.contains("host=www.example.com"),
+            "实际地址: {}",
+            request.url
+        );
     }
 
     #[tokio::test]
     async fn unclosed_js_block_is_reported() {
         let js = QuickJsEvaluator::spawn().unwrap();
-        let error = build_search_url(&source("/s?q=<js>md5(key)"), "x", &env(&js))
+        let error = build_search_request(&source("/s?q=<js>md5(key)"), "x", &env(&js))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("没有闭合"), "实际错误: {error}");
@@ -423,9 +518,10 @@ mod tests {
         let js = QuickJsEvaluator::spawn().unwrap();
         let template = "/api/search?q={{key}}&t=<js>var t = Math.floor(Date.now() / 1000); \
                         java.put('t', t); t</js>&sign=<js>md5(key + '|' + java.get('t') + '|SALT')</js>";
-        let url = build_search_url(&source(template), "斗破苍穹", &env(&js))
+        let request = build_search_request(&source(template), "斗破苍穹", &env(&js))
             .await
             .unwrap();
+        let url = request.url;
 
         let stamp = url
             .split("&t=")

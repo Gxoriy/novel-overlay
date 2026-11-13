@@ -127,6 +127,7 @@ impl TierSource for ReplayTier {
     fn fetch<'a>(
         &'a self,
         url: &'a str,
+        _body: Option<&'a str>,
         _headers: &'a [(String, String)],
         _challenge_markers: &'a [String],
     ) -> TierFuture<'a> {

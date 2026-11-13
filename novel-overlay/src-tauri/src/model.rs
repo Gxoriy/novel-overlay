@@ -15,6 +15,10 @@ pub struct BookSource {
     pub enabled: bool,
     /// 搜索地址模板，支持 `{{key}}` / `{key}` / `searchKey` 占位符
     pub search_url: String,
+    /// 搜索请求体模板。**存在即用 POST 发送搜索请求**（有些站点的搜索表单是
+    /// `method="post"`，GET 传参只会得到空结果）。支持 `{{key}}` / `{{gbk:key}}`。
+    #[serde(default)]
+    pub search_body: Option<String>,
     pub rule_search: RuleSearch,
     #[serde(default)]
     pub rule_book_info: Option<RuleBookInfo>,

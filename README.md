@@ -36,6 +36,7 @@ npm run tauri build
   "bookSourceUrl": "https://example.com",
   "enabled": true,
   "searchUrl": "/search?q={{key}}",           // 支持 <js>…</js> 片段算签名
+  "searchBody": "s={{urlencode:key}}",        // 可选：配置即用 POST 发搜索（表单是 method="post" 的站点）
   "ruleSearch": {
     "bookList": "css:div.result@css:dl",       // 每个结果一个列表项
     "name": "css:dd@css:h3@css:a@text",
@@ -64,6 +65,19 @@ npm run tauri build
 | `regex:<pattern>` | 正则提取或替换 |
 | `trim` | 去首尾空白 |
 | `js:<code>` | QuickJS 求值，变量 `result` 为当前值 |
+
+关键词占位符（`searchUrl` 与 `searchBody` 通用）：
+
+| 写法 | 编码 | 适用 |
+| --- | --- | --- |
+| `{{key}}` | 原样 | 常规 UTF-8 站点 |
+| `{{gbk:key}}` | GBK 百分号编码 | 老站（笔趣阁系），UTF-8 传过去只会「查无此书」 |
+| `{{urlencode:key}}` | UTF-8 表单编码 | POST 表单体：中文原样字节会被服务端当成「没有输入」 |
+
+`searchBody` 存在时搜索用 POST 发送，请求体支持同样的占位符与 `<js>` 片段；
+引擎会自动补 `Content-Type: application/x-www-form-urlencoded`。若站点按地区
+拒绝代理出口（403 页面含 "The region has been denied."），引擎会自动改用本机
+直连重试一次，无需书源配置。
 
 写新书源时用探针一步完成「转换 → 实测 → 入库」：
 

@@ -96,6 +96,16 @@ impl Fetcher {
     ///
     /// **不校验状态码**：调用方需要拿到 429 / 503 才能做挑战检测。
     pub async fn request(&self, url: &str, extra_headers: &[(String, String)]) -> Result<HttpResponse> {
+        self.request_ex(url, extra_headers, None).await
+    }
+
+    /// 带请求体的版本；`body` 为 `Some` 时用 POST 发送。
+    async fn request_ex(
+        &self,
+        url: &str,
+        extra_headers: &[(String, String)],
+        body: Option<&str>,
+    ) -> Result<HttpResponse> {
         // 限速与出口无关：换出口不重置配额。
         self.limiter.acquire().await;
 
@@ -105,7 +115,20 @@ impl Fetcher {
             None => self.client.clone(),
         };
 
-        let mut request = client.get(url);
+        let mut request = match body {
+            Some(body) => {
+                // 表单 POST 的默认 Content-Type；书源没显式声明就自动补上。
+                let mut request = client.post(url).body(body.to_string());
+                if !extra_headers
+                    .iter()
+                    .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+                {
+                    request = request.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+                }
+                request
+            }
+            None => client.get(url),
+        };
         if !extra_headers.is_empty() {
             let mut headers = HeaderMap::new();
             for (key, value) in extra_headers {
@@ -129,7 +152,7 @@ impl Fetcher {
             }
         };
 
-        let status = response.status().as_u16();
+        let mut status = response.status().as_u16();
 
         // 407 是代理自己的问题，与站点无关。
         if status == 407 {
@@ -142,7 +165,7 @@ impl Fetcher {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(|value| value.to_string());
-        let bytes = match response.bytes().await {
+        let mut bytes = match response.bytes().await {
             Ok(bytes) => bytes,
             Err(error) => {
                 // 响应体读到一半断了，同样算出口故障。
@@ -150,6 +173,56 @@ impl Fetcher {
                 return Err(error).with_context(|| format!("读取响应体失败: {url}"));
             }
         };
+
+        // 站点按**地区**拒绝代理出口时（"The region has been denied."），
+        // 本机直连就是站点允许的访问方式 —— 用真实出口重试一次。
+        // 只认这一种响应，一般 403 不重试：那是站点态度，换出口也无济于事。
+        if status == 403 && picked.is_some() && is_region_denied(&bytes) {
+            log::info!("站点拒绝代理出口地区，改用本机直连重试: {url}");
+            let direct = self.client.clone();
+            let mut retry = match body {
+                Some(body) => {
+                    // 首次请求的 Content-Type 自动补齐逻辑在这里同样要生效，
+                    // 否则直连重试发出去的是没有类型的 POST，表单参数会被丢掉。
+                    let mut retry = direct.post(url).body(body.to_string());
+                    if !extra_headers
+                        .iter()
+                        .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+                    {
+                        retry = retry.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+                    }
+                    retry
+                }
+                None => direct.get(url),
+            };
+            if !extra_headers.is_empty() {
+                let mut headers = HeaderMap::new();
+                for (key, value) in extra_headers {
+                    if let (Ok(name), Ok(parsed)) = (
+                        HeaderName::from_bytes(key.as_bytes()),
+                        HeaderValue::from_str(value),
+                    ) {
+                        headers.insert(name, parsed);
+                    }
+                }
+                retry = retry.headers(headers);
+            }
+            match retry.send().await {
+                Ok(second) => {
+                    status = second.status().as_u16();
+                    match second.bytes().await {
+                        Ok(second_bytes) => bytes = second_bytes,
+                        Err(error) => {
+                            return Err(error).with_context(|| format!("直连重试读取响应体失败: {url}"));
+                        }
+                    }
+                    log::info!("直连重试得到 HTTP {status}: {url}");
+                }
+                Err(error) => {
+                    log::warn!("直连重试失败，沿用代理出口的响应: {error}");
+                }
+            }
+        }
 
         // 拿到**完整**响应就说明这个出口是通的。4xx / 5xx 是站点的态度，
         // 记成出口故障会误伤池子。
@@ -245,9 +318,25 @@ fn host_of(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
+/// 站点按地区拒绝访问的响应特征（403 页面里的一句话，ASCII，与编码无关）。
+fn is_region_denied(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes)
+        .to_lowercase()
+        .contains("region has been denied")
+}
+
 impl Transport for Fetcher {
     fn get<'a>(&'a self, url: &'a str, headers: &'a [(String, String)]) -> TransportFuture<'a> {
         Box::pin(self.request(url, headers))
+    }
+
+    fn post<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a str,
+        headers: &'a [(String, String)],
+    ) -> TransportFuture<'a> {
+        Box::pin(self.request_ex(url, headers, Some(body)))
     }
 }
 
@@ -260,6 +349,22 @@ impl PageSource for Fetcher {
     ) -> TextFuture<'a> {
         Box::pin(async move {
             let response = self.request(url, headers).await?;
+            if !(200..300).contains(&response.status) {
+                return Err(anyhow!("HTTP {}: {url}", response.status));
+            }
+            Ok(response.body)
+        })
+    }
+
+    fn post_text<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a str,
+        headers: &'a [(String, String)],
+        _challenge_markers: &'a [String],
+    ) -> TextFuture<'a> {
+        Box::pin(async move {
+            let response = self.request_ex(url, headers, Some(body)).await?;
             if !(200..300).contains(&response.status) {
                 return Err(anyhow!("HTTP {}: {url}", response.status));
             }

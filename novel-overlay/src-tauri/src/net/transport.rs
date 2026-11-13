@@ -38,6 +38,17 @@ pub type TransportFuture<'a> = Pin<Box<dyn Future<Output = Result<HttpResponse>>
 /// 最底层的网络出口。**没有任何合规判断**，闸门在它之上（见 `Ladder`）。
 pub trait Transport: Send + Sync {
     fn get<'a>(&'a self, url: &'a str, headers: &'a [(String, String)]) -> TransportFuture<'a>;
+
+    /// 带请求体的 POST。默认不支持 —— 需要的传输层（真实网络）自己覆写，
+    /// 测试脚本与回放层不必实现。
+    fn post<'a>(
+        &'a self,
+        _url: &'a str,
+        _body: &'a str,
+        _headers: &'a [(String, String)],
+    ) -> TransportFuture<'a> {
+        Box::pin(async { Err(anyhow::anyhow!("该传输层不支持 POST 请求")) })
+    }
 }
 
 pub type TextFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
@@ -93,6 +104,18 @@ pub trait PageSource: Send + Sync {
         headers: &'a [(String, String)],
         challenge_markers: &'a [String],
     ) -> TextFuture<'a>;
+
+    /// POST 方式取页面（搜索表单是 `method="post"` 的站点需要）。
+    /// 走与 [`Self::get_text`] 完全相同的合规闸门。默认不支持。
+    fn post_text<'a>(
+        &'a self,
+        _url: &'a str,
+        _body: &'a str,
+        _headers: &'a [(String, String)],
+        _challenge_markers: &'a [String],
+    ) -> TextFuture<'a> {
+        Box::pin(async { Err(anyhow::anyhow!("该页面来源不支持 POST 请求")) })
+    }
 
     /// 取页面，并带上「怎么拿到的」轨迹。诊断面板靠它回答「为什么走了这一层」。
     ///

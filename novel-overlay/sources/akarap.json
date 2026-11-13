@@ -1,0 +1,22 @@
+{
+  "bookSourceName": "阿卡小说",
+  "bookSourceUrl": "https://www.akarap.cc",
+  "enabled": true,
+  "searchUrl": "/search.html",
+  "searchBody": "s={{urlencode:key}}",
+  "ruleSearch": {
+    "bookList": "css:ul.txt-list@css:li",
+    "name": "css:span.s2@css:a@text",
+    "bookUrl": "css:span.s2@css:a@attr:href",
+    "author": "css:span.s3@css:a@text",
+    "lastChapter": "css:span.s4@css:a@text"
+  },
+  "ruleToc": {
+    "chapterList": "css:ul.section-list@index:1@css:li@css:a",
+    "chapterName": "text",
+    "chapterUrl": "attr:href"
+  },
+  "ruleContent": {
+    "content": "css:div.word_read@css:p:not([style])@text"
+  }
+}

@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use novel_overlay_lib::engine::{JsEvaluator, PassThroughJs, QuickJsEvaluator, SourceEngine};
-use novel_overlay_lib::model::BookSource;
+use novel_overlay_lib::model::{BookSource, SearchBook};
 use novel_overlay_lib::net::{
     clock, discover_local_proxies, Fetcher, Ladder, PageSource, ProxyPool, ProxySpec,
     PublicWebConfig, PublicWebTier, Transport,
@@ -23,6 +23,8 @@ struct Args {
     keyword: String,
     import: bool,
     db: Option<PathBuf>,
+    /// 指定书页地址：跳过搜索（搜索接口常有频率限制），直接验证目录与正文。
+    book: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -30,6 +32,7 @@ fn parse_args() -> Result<Args> {
     let mut keyword = "斗破苍穹".to_string();
     let mut import = false;
     let mut db = None;
+    let mut book = None;
 
     for arg in std::env::args().skip(1) {
         if let Some(rest) = arg.strip_prefix("--json=") {
@@ -38,6 +41,8 @@ fn parse_args() -> Result<Args> {
             keyword = rest.to_string();
         } else if let Some(rest) = arg.strip_prefix("--db=") {
             db = Some(PathBuf::from(rest));
+        } else if let Some(rest) = arg.strip_prefix("--book=") {
+            book = Some(rest.to_string());
         } else if arg == "--import" {
             import = true;
         }
@@ -48,6 +53,7 @@ fn parse_args() -> Result<Args> {
         keyword,
         import,
         db,
+        book,
     })
 }
 
@@ -110,6 +116,7 @@ fn load_sources(path: &PathBuf) -> Result<Vec<BookSource>> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = parse_args()?;
     let sources = load_sources(&args.json)?;
     let ladder = build_ladder()?;
@@ -125,35 +132,71 @@ async fn main() -> Result<()> {
             source.book_source_url
         );
 
-        let step = Instant::now();
-        let books = match engine.search(source, &args.keyword).await {
-            Ok(books) => books,
-            Err(error) => {
-                println!("  搜索失败: {error:#}");
-                continue;
+        let first = if let Some(book_url) = &args.book {
+            println!("  跳过搜索（--book 指定，搜索接口常有频率限制）");
+            SearchBook {
+                source_id: 0,
+                source_name: String::new(),
+                name: String::new(),
+                author: String::new(),
+                kind: String::new(),
+                intro: String::new(),
+                cover_url: String::new(),
+                book_url: book_url.clone(),
+                last_chapter: String::new(),
             }
-        };
-        println!("  搜索: {} 条（{:.1}s）", books.len(), step.elapsed().as_secs_f32());
-        for book in books.iter().take(3) {
-            println!(
-                "    - {} / {} / {}",
-                book.name,
-                if book.author.is_empty() { "?" } else { &book.author },
-                book.book_url
-            );
-        }
-        let Some(first) = books.first() else {
-            // 0 条时把引擎实际拿到的搜索页存下来，方便对照选择器。
+        } else {
+            let step = Instant::now();
+            let books = match engine.search(source, &args.keyword).await {
+                Ok(books) => books,
+                Err(error) => {
+                    println!("  搜索失败: {error:#}");
+                    continue;
+                }
+            };
+            println!("  搜索: {} 条（{:.1}s）", books.len(), step.elapsed().as_secs_f32());
+            for book in books.iter().take(3) {
+                println!(
+                    "    - {} / {} / {}",
+                    book.name,
+                    if book.author.is_empty() { "?" } else { &book.author },
+                    book.book_url
+                );
+            }
+            match books.first() {
+                Some(first) => first.clone(),
+                None => {
+            // 0 条时按书源的**实际请求方式**（GET / POST）把引擎拿到的搜索页存下来，
+            // 方便对照选择器 —— 用 GET 重放 POST 书源会拿到「请输入搜索词」的空页。
             let template = source.search_url.replace("{{key}}", &args.keyword);
             let url = url::Url::parse(&source.book_source_url)
                 .and_then(|base| base.join(&template))
                 .map(|u| u.to_string())
                 .unwrap_or_else(|_| template.clone());
             let headers = source.headers().unwrap_or_default();
-            match ladder
-                .get_text(&url, &headers, source.challenge_markers())
-                .await
-            {
+            let markers = source.challenge_markers();
+            let result = match source.search_body.as_deref() {
+                Some(body) => {
+                    // 与引擎一致：`{{urlencode:key}}` / `{{key}}` 都要替换。
+                    let encoded: String = args
+                        .keyword
+                        .bytes()
+                        .map(|byte| match byte {
+                            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                                (byte as char).to_string()
+                            }
+                            _ => format!("%{byte:02X}"),
+                        })
+                        .collect();
+                    let body = body
+                        .replace("{{urlencode:key}}", &encoded)
+                        .replace("{{key}}", &args.keyword)
+                        .replace("{key}", &args.keyword);
+                    ladder.post_text(&url, &body, &headers, markers).await
+                }
+                None => ladder.get_text(&url, &headers, markers).await,
+            };
+            match result {
                 Ok(html) => {
                     let dir = std::path::Path::new("../probe");
                     std::fs::create_dir_all(dir).ok();
@@ -170,7 +213,9 @@ async fn main() -> Result<()> {
                 Err(error) => println!("  搜索页也取不到: {error:#}"),
             }
             println!("  ✗ 无结果，判定不可用");
-            continue;
+                    continue;
+                }
+            }
         };
 
         let step = Instant::now();
