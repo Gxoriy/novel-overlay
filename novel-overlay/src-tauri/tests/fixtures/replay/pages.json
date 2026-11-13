@@ -1,0 +1,7 @@
+{
+  "/search.php": "search.html",
+  "/book/1": "book.html",
+  "/book/1/toc": "toc.html",
+  "/read/1.html": "chapter-1.html",
+  "/read/2.html": "chapter-2.html"
+}

@@ -1,0 +1,21 @@
+{
+  "bookSourceName": "笔趣阁 5200",
+  "bookSourceUrl": "https://www.biquge5200.cc",
+  "enabled": true,
+  "searchUrl": "/modules/article/search.php?searchkey={{key}}",
+  "ruleSearch": {
+    "bookList": "css:table.grid@css:tr",
+    "name": "css:td.odd@css:a@text",
+    "bookUrl": "css:td.odd@css:a@attr:href",
+    "author": "css:td@index:2@text",
+    "lastChapter": "css:td.even@css:a@text"
+  },
+  "ruleToc": {
+    "chapterList": "css:div#list@css:dl@css:dd@skip:9@css:a",
+    "chapterName": "text",
+    "chapterUrl": "attr:href"
+  },
+  "ruleContent": {
+    "content": "css:div#content@br"
+  }
+}

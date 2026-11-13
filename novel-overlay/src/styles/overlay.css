@@ -1,0 +1,169 @@
+:root {
+  --reader-font: 15px;
+  --reader-lh: 1.9;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+.overlay-body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  color: #e8eaee;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+}
+
+/* 面板不透明度由 overlay.ts 写到 .frame 的行内 `--panel-alpha` 上。
+   初值必须是 0（全透明）—— 否则脚本跑起来之前会闪一下深色底板。 */
+.frame {
+  --panel-alpha: 0;
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* 默认 0：真正只剩文字；点正文后才会抬到半透明实色（无模糊） */
+  background: rgba(18, 20, 25, var(--panel-alpha));
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+  transition: background 140ms ease;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.frame.text-only {
+  background: transparent !important;
+}
+
+/* 顶栏 / 底栏：默认完全隐藏，鼠标进入浮窗区域才显现 */
+.grip,
+.foot {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(18, 20, 25, 0.88);
+  border-radius: 8px;
+  transition: opacity 160ms ease;
+}
+
+.grip {
+  top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  padding: 0 8px 0 10px;
+  font-size: 11px;
+  color: rgba(232, 234, 238, 0.85);
+}
+
+.foot {
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 10px;
+  color: rgba(232, 234, 238, 0.7);
+}
+
+.frame:hover .grip,
+.frame:hover .foot {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chapter {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.tools .sep {
+  width: 1px;
+  height: 11px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.tools button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.tools button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.tools button.on {
+  background: rgba(110, 168, 254, 0.28);
+  color: #cfe3ff;
+}
+
+.viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 14px;
+  scrollbar-width: none;
+  cursor: pointer;
+}
+
+.frame.text-only .viewport {
+  cursor: default;
+}
+
+.viewport::-webkit-scrollbar {
+  display: none;
+}
+
+/* 全透明模式下正文直接压在桌面内容上，浅色字遇到浅色背景会糊掉。
+   两层阴影：贴边的一层保字形轮廓，外扩的一层压暗周围，等效于「描边」。 */
+.text {
+  font-size: var(--reader-font);
+  line-height: var(--reader-lh);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.9),
+    0 0 12px rgba(0, 0, 0, 0.6);
+}
+
+.text p {
+  margin: 0 0 0.7em;
+  text-indent: 2em;
+  word-break: break-word;
+}
+
+.text p.muted {
+  text-indent: 0;
+  color: rgba(232, 234, 238, 0.5);
+  font-size: 12px;
+}

@@ -1,0 +1,32 @@
+{
+  "bookSourceName": "夹具书源（离线回放专用）",
+  "bookSourceUrl": "https://fixture.test",
+  "enabled": true,
+  "searchUrl": "/search.php?q={{key}}",
+  "ruleSearch": {
+    "bookList": "css:div.result-list@css:div.result-item",
+    "name": "css:h3.book-title@text",
+    "author": "css:p.book-author@text",
+    "kind": "css:span.book-kind@text",
+    "intro": "css:p.book-intro@text",
+    "coverUrl": "css:img.book-cover@attr:src",
+    "bookUrl": "css:h3.book-title@css:a@attr:href",
+    "lastChapter": "css:a.latest-chapter@text"
+  },
+  "ruleBookInfo": {
+    "name": "css:h1.book-name@text",
+    "author": "css:p.book-author@text",
+    "intro": "css:div.book-intro@text",
+    "tocUrl": "css:a.toc-link@attr:href"
+  },
+  "ruleToc": {
+    "chapterList": "css:div#chapter-list@css:a",
+    "chapterName": "text",
+    "chapterUrl": "attr:href"
+  },
+  "ruleContent": {
+    "content": "css:div#content@br"
+  },
+  "header": "{\"Referer\": \"https://fixture.test/\"}",
+  "challengeMarkers": ["fixture-wall"]
+}

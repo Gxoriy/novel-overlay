@@ -1,0 +1,10 @@
+# IDE
+.idea/
+.vscode/
+.codebuddy/
+
+# macOS
+.DS_Store
+
+# 日志
+*.log

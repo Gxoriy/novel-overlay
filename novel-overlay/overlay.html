@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>阅读浮窗</title>
+  </head>
+  <body class="overlay-body">
+    <div class="frame" id="frame">
+      <div class="grip" id="grip" data-tauri-drag-region>
+        <span class="chapter" id="chapter">未开始阅读</span>
+        <div class="tools">
+          <button id="prev" title="上一章">‹</button>
+          <button id="play" title="暂停 / 继续">‖</button>
+          <button id="next" title="下一章">›</button>
+          <span class="sep"></span>
+          <button id="font-dec" title="字号 -">A−</button>
+          <button id="font-inc" title="字号 +">A+</button>
+          <button id="alpha-dec" title="底板更淡（到底为全透明）">◔</button>
+          <button id="alpha-inc" title="底板更实">◕</button>
+          <span class="sep"></span>
+          <button id="close" title="关闭浮窗">×</button>
+        </div>
+      </div>
+      <div class="viewport" id="viewport">
+        <div class="text" id="text"></div>
+      </div>
+      <div class="foot">
+        <span id="hint">自动滚动 · 点正文切换纯透明</span>
+        <span id="pct">0%</span>
+      </div>
+    </div>
+    <script type="module" src="/src/overlay.ts"></script>
+  </body>
+</html>

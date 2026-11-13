@@ -1,0 +1,19 @@
+{
+  "bookSourceName": "笔趣阁 616",
+  "bookSourceUrl": "https://www.bqg616.cc",
+  "enabled": true,
+  "searchUrl": "https://apibi.cc/api/search?q={{key}}",
+  "ruleSearch": {
+    "bookList": "css:div",
+    "name": "css:a@text"
+  },
+  "ruleToc": {
+    "chapterList": "css:a",
+    "chapterName": "text",
+    "chapterUrl": "attr:href"
+  },
+  "ruleContent": {
+    "content": "css:div@br"
+  },
+  "header": "{\"Referer\":\"https://www.bqg616.cc/\",\"Accept\":\"application/json,text/javascript,*/*;q=0.1\"}"
+}

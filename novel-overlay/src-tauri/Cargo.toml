@@ -1,0 +1,78 @@
+[package]
+name = "novel-overlay"
+version = "0.1.0"
+description = "Mac 桌面小说阅读器：多源搜索采集 + 透明置顶阅读浮窗"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "novel_overlay_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  # 测试里要起一个本地假代理来验证「请求真的走了代理出口」。
+  # reqwest 本来就会启用这两个 feature，所以对产物体积没有影响。
+  "net",
+  "io-util",
+] }
+reqwest = { version = "0.12", default-features = false, features = [
+  # macOS 上 rustls 的 TLS 指纹会被笔趣阁一类接口直接换成诱饵正文；
+  # 改用系统原生 TLS（SecureTransport），与系统 curl/浏览器出口更接近。
+  "native-tls",
+  "gzip",
+  "brotli",
+  "deflate",
+  "charset",
+  # 出口代理池支持 socks5:// —— 没有这个 feature，socks 代理会在运行时才报错
+  "socks",
+] }
+scraper = "0.20"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+window-vibrancy = "0.6"
+html-escape = "0.2"
+
+# 以下为跨平台依赖，通用代码（net/、store.rs、engine/ 等）直接使用，
+# 不能放进 macOS 专属段，否则 Windows/Linux 编译会 unresolved import。
+encoding_rs = "0.8"
+url = "2"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+# 内嵌 JS 引擎：执行书源规则里的 <js> / js: 片段（签名还原）
+rquickjs = "0.14"
+
+# 暴露给 JS 的加密原语（高频签名走 Rust，不靠 JS 实现）
+base64 = "0.22"
+hex = "0.4"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+cbc = "0.1"
+cipher = { version = "0.4", features = ["alloc", "block-padding"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSColor", "NSWindow"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

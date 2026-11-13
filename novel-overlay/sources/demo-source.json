@@ -1,0 +1,28 @@
+{
+  "bookSourceName": "示例书源（把这里和下面的规则换成你自己的站点）",
+  "bookSourceUrl": "https://www.example.com",
+  "enabled": true,
+  "searchUrl": "/search.php?q={{key}}",
+  "ruleSearch": {
+    "bookList": "css:div.result-list@css:div.result-item",
+    "name": "css:h3.book-title@css:a@text",
+    "author": "css:p.book-author@text",
+    "kind": "css:span.book-kind@text",
+    "intro": "css:p.book-intro@text",
+    "coverUrl": "css:img.book-cover@attr:src",
+    "bookUrl": "css:h3.book-title@css:a@attr:href",
+    "lastChapter": "css:a.latest-chapter@text"
+  },
+  "ruleBookInfo": {
+    "tocUrl": "css:a.toc-link@attr:href"
+  },
+  "ruleToc": {
+    "chapterList": "css:div#chapter-list@css:a",
+    "chapterName": "text",
+    "chapterUrl": "attr:href"
+  },
+  "ruleContent": {
+    "content": "css:div#content@br"
+  },
+  "header": "{\"Referer\": \"https://www.example.com/\"}"
+}

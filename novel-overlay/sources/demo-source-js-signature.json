@@ -1,0 +1,28 @@
+{
+  "bookSourceName": "示例书源 · 带签名（模板，规则要换成你自己站点的）",
+  "bookSourceUrl": "https://www.example.com",
+  "enabled": false,
+  "searchUrl": "/api/search?q={{key}}&t=<js>var t = Math.floor(Date.now() / 1000); java.put('t', t); t</js>&sign=<js>md5(key + '|' + java.get('t') + '|SALT')</js>",
+  "ruleSearch": {
+    "bookList": "css:div.result-list@css:div.result-item",
+    "name": "css:h3.book-title@text@<js>result.replace(/\\s*\\[完结\\]\\s*$/, '')</js>",
+    "author": "css:p.book-author@text",
+    "kind": "css:span.book-kind@text",
+    "intro": "css:p.book-intro@text",
+    "coverUrl": "css:img.book-cover@attr:src",
+    "bookUrl": "css:h3.book-title@css:a@attr:href",
+    "lastChapter": "css:a.latest-chapter@text"
+  },
+  "ruleBookInfo": {
+    "tocUrl": "css:a.toc-link@attr:href"
+  },
+  "ruleToc": {
+    "chapterList": "css:div#chapter-list@css:a",
+    "chapterName": "text",
+    "chapterUrl": "attr:href"
+  },
+  "ruleContent": {
+    "content": "css:div#content@html@<js>result.replace(/<span class=\"watermark\">[^<]*<\\/span>/g, '')</js>@br"
+  },
+  "header": "{\"Referer\": \"https://www.example.com/\", \"X-Requested-With\": \"XMLHttpRequest\"}"
+}

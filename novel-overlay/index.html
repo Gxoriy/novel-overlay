@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>书库</title>
+  </head>
+  <body>
+    <div class="app">
+      <header class="titlebar">
+        <span class="brand">书库</span>
+        <div class="spacer"></div>
+        <button id="btn-overlay" class="ghost" data-state="closed" title="显示/隐藏阅读浮窗">
+          <span class="dot"></span>
+          <span class="label">阅读浮窗</span>
+        </button>
+      </header>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="search">搜索</button>
+        <button class="tab" data-tab="shelf">书架</button>
+        <button class="tab" data-tab="sources">书源</button>
+        <button class="tab" data-tab="settings">设置</button>
+      </nav>
+
+      <main>
+        <section id="pane-search" class="pane active">
+          <div class="searchbar">
+            <select id="search-source" title="限定书源"></select>
+            <input
+              id="search-input"
+              type="text"
+              placeholder="书名 / 作者，回车搜索"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <label class="limit-field" title="每次采集多少章；留空表示采完全部未缓存章节">
+              <span>采</span>
+              <input
+                id="collect-limit"
+                type="number"
+                min="1"
+                step="1"
+                inputmode="numeric"
+                placeholder="全书"
+                value="30"
+              />
+              <span>章</span>
+            </label>
+            <button id="search-go" class="primary">搜索</button>
+          </div>
+          <div id="search-status" class="status"></div>
+          <ul id="search-results" class="list"></ul>
+        </section>
+
+        <section id="pane-shelf" class="pane">
+          <div id="shelf-status" class="status"></div>
+          <ul id="shelf-list" class="list"></ul>
+        </section>
+
+        <section id="pane-sources" class="pane">
+          <details class="import">
+            <summary>导入书源</summary>
+            <div class="source-add">
+              <textarea
+                id="source-json"
+                spellcheck="false"
+                placeholder='粘贴书源 JSON：单个对象或数组。字段名兼容"阅读"格式（bookSourceName / bookSourceUrl / searchUrl / ruleSearch / ruleBookInfo / ruleToc / ruleContent）'
+              ></textarea>
+              <button id="source-import" class="primary">导入</button>
+            </div>
+          </details>
+          <div id="source-status" class="status"></div>
+          <ul id="source-list" class="list"></ul>
+        </section>
+
+        <section id="pane-settings" class="pane">
+          <div class="settings">
+            <h2 class="settings-title">数据目录</h2>
+            <p class="settings-hint">
+              书库数据库（novel-overlay.db）存放于此。默认在程序根目录的
+              <code>docs</code> 下；改完保存后需重启应用生效。
+            </p>
+            <div class="settings-row">
+              <input
+                id="data-dir-input"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="留空表示使用默认目录"
+              />
+              <button id="data-dir-save" class="primary">保存</button>
+              <button id="data-dir-reset" class="ghost">恢复默认</button>
+            </div>
+            <div id="data-dir-status" class="status"></div>
+            <p class="settings-hint" id="shortcut-hint">阅读浮窗快捷键：读取中…</p>
+          </div>
+        </section>
+      </main>
+
+      <aside id="toc-panel" class="drawer hidden">
+        <header>
+          <span id="toc-title">目录</span>
+          <label class="limit-field" title="本次采集多少章；留空表示采完全部未缓存章节">
+            <span>采</span>
+            <input
+              id="toc-collect-limit"
+              type="number"
+              min="1"
+              step="1"
+              inputmode="numeric"
+              placeholder="全书"
+              value="30"
+            />
+            <span>章</span>
+          </label>
+          <button id="toc-download" class="ghost" title="按左侧数量采集未缓存章节">开始采集</button>
+          <button id="toc-close" class="ghost" title="Esc">关闭</button>
+        </header>
+        <input id="toc-filter" type="text" placeholder="过滤章节名" autocomplete="off" />
+        <div id="toc-status" class="status"></div>
+        <ul id="toc-list" class="list"></ul>
+      </aside>
+
+      <div id="toast" class="toast hidden"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
