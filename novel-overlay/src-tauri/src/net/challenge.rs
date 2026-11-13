@@ -135,7 +135,7 @@ impl ChallengeProfile {
         }
 
         let trimmed = body.trim();
-        if status == 200 && trimmed.len() < MIN_BODY_BYTES {
+        if status == 200 && trimmed.len() < MIN_BODY_BYTES && !is_json_payload(trimmed) {
             return Some(Challenge {
                 kind: ChallengeKind::EmptyShell,
                 detail: format!("响应体仅 {} 字节", trimmed.len()),
@@ -144,6 +144,17 @@ impl ChallengeProfile {
 
         None
     }
+}
+
+/// 合法的 JSON 响应不算空壳。
+///
+/// 接口型书源的「没搜到」就是 `{"data":[],"title":"搜索结果"}` 这种几十字节的
+/// 正常响应，按字节数一刀切会把「查无此书」误判成反爬，用户看到的是「请求失败」。
+fn is_json_payload(trimmed: &str) -> bool {
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
 }
 
 #[cfg(test)]
@@ -185,6 +196,19 @@ mod tests {
         let profile = ChallengeProfile::default();
         let challenge = profile.detect(200, "<html></html>").expect("应识别为空壳页");
         assert_eq!(challenge.kind, ChallengeKind::EmptyShell);
+    }
+
+    /// 接口型书源「没搜到」时返回的短 JSON 不能被当成空壳页。
+    #[test]
+    fn short_json_is_not_an_empty_shell() {
+        let profile = ChallengeProfile::default();
+        assert_eq!(profile.detect(200, r#"{"data":[],"title":"搜索结果"}"#), None);
+        assert_eq!(profile.detect(200, r#"{"list":[]}"#), None);
+        // 不是合法 JSON 的短响应仍然算空壳。
+        assert_eq!(
+            profile.detect(200, r#"{"data":[]"#).map(|c| c.kind),
+            Some(ChallengeKind::EmptyShell)
+        );
     }
 
     #[test]

@@ -211,7 +211,15 @@ async fn build_search_url(
 ) -> Result<String> {
     let base = Url::parse(&source.book_source_url)
         .with_context(|| format!("书源地址非法: {}", source.book_source_url))?;
-    let template = if source.search_url.contains("{{key}}") {
+    // `{{gbk:key}}`：老站（笔趣阁系）按 GBK 匹配关键词，UTF-8 编码过去是「查无此书」。
+    // 先替换带花括号的完整写法，再替换单花括号写法，避免残留 `}`。
+    let template = if source.search_url.contains("gbk:key") {
+        let encoded = encode_query_component_gbk(keyword);
+        source
+            .search_url
+            .replace("{{gbk:key}}", &encoded)
+            .replace("{gbk:key}", &encoded)
+    } else if source.search_url.contains("{{key}}") {
         source.search_url.replace("{{key}}", keyword)
     } else if source.search_url.contains("{key}") {
         source.search_url.replace("{key}", keyword)
@@ -224,6 +232,24 @@ async fn build_search_url(
         .or_else(|_| Url::parse(&template))
         .with_context(|| format!("无法拼接搜索地址: {}", source.search_url))?;
     Ok(url.to_string())
+}
+
+/// 把关键词按 GBK 编码再做百分号编码，供 `{{gbk:key}}` 使用。
+///
+/// GBK 表示不了的字符会被替换成 `?` —— 这类关键词在老站本来就搜不到，
+/// 不必为此报错打断整次搜索。
+fn encode_query_component_gbk(keyword: &str) -> String {
+    let (bytes, _, _) = encoding_rs::GBK.encode(keyword);
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for byte in bytes.iter() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// 把字符串里的 `<js>...</js>` 块求值后替换掉。searchUrl 常用它拼签名参数。
@@ -319,6 +345,32 @@ mod tests {
             url.starts_with("https://www.example.com/search?q=%E6%96%97"),
             "实际地址: {url}"
         );
+    }
+
+    /// 老站按 GBK 匹配关键词，UTF-8 编码过去只会返回「查无此书」。
+    #[tokio::test]
+    async fn search_url_encodes_keyword_as_gbk() {
+        let js = QuickJsEvaluator::spawn().unwrap();
+        let url = build_search_url(
+            &source("/search.php?searchkey={{gbk:key}}"),
+            "斗破苍穹",
+            &env(&js),
+        )
+        .await
+        .unwrap();
+        assert!(
+            url.ends_with("searchkey=%B6%B7%C6%C6%B2%D4%F1%B7"),
+            "实际地址: {url}"
+        );
+
+        let single = build_search_url(
+            &source("/s?q={gbk:key}"),
+            "斗破苍穹",
+            &env(&js),
+        )
+        .await
+        .unwrap();
+        assert!(single.ends_with("q=%B6%B7%C6%C6%B2%D4%F1%B7"), "实际地址: {single}");
     }
 
     #[tokio::test]
