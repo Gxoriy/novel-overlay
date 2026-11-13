@@ -901,6 +901,12 @@ async function boot(): Promise<void> {
     await refreshDataSettings();
     await refreshShortcutHint();
   } catch (error) {
+    // 后端 setup 失败时所有命令都会报错，列表区留白会让人以为是「没有书源」。
+    renderEmpty(
+      dom.sourceList,
+      "书源加载失败",
+      "后端未就绪：数据库被占用或启动出错，重启应用；仍失败可查看数据目录下的 startup-error.log",
+    );
     toast(errText(error), "error");
   }
 }

@@ -113,6 +113,17 @@ fn build_ladder() -> Result<Arc<Ladder>, String> {
     Ok(Arc::new(Ladder::new(tiers)))
 }
 
+/// 启动阶段的致命错误：写进数据目录一份，用户能把文件发出来。
+///
+/// 这类失败（库被锁、目录不可写）只会让前端看到「每个命令都 state not managed」，
+/// 光靠 stderr 无从排查。
+fn report_startup_failure(dir: &std::path::Path, message: String) -> Box<dyn std::error::Error> {
+    let path = dir.join("startup-error.log");
+    let _ = std::fs::write(&path, format!("{message}\n"));
+    log::error!("启动失败：{message}（已写入 {}）", path.display());
+    message.into()
+}
+
 /// 内置书源按 URL 补种：已存在则不动（避免覆盖用户的停用选择）。
 fn ensure_builtin_sources(store: &Store) -> Result<(), String> {
     let source = crate::engine::bqg::builtin_source();
@@ -210,10 +221,30 @@ pub fn run() {
             let data_dir = crate::settings::resolve(&handle);
             crate::settings::migrate_legacy_db(&handle, &data_dir);
 
-            let store = Store::open(&data_dir.join("novel-overlay.db"))
-                .map_err(|error| format!("初始化数据库失败: {error}"))?;
-            ensure_builtin_sources(&store)?;
-            let pages = build_ladder()?;
+            let store = match Store::open(&data_dir.join("novel-overlay.db")) {
+                Ok(store) => store,
+                Err(error) => {
+                    return Err(report_startup_failure(
+                        &data_dir,
+                        format!("初始化数据库失败: {error:#}"),
+                    ));
+                }
+            };
+            if let Err(error) = ensure_builtin_sources(&store) {
+                return Err(report_startup_failure(
+                    &data_dir,
+                    format!("写入内置书源失败: {error}"),
+                ));
+            }
+            let pages = match build_ladder() {
+                Ok(pages) => pages,
+                Err(error) => {
+                    return Err(report_startup_failure(
+                        &data_dir,
+                        format!("装配采集阶梯失败: {error}"),
+                    ));
+                }
+            };
             log::info!("采集阶梯：{}", pages.describe());
 
             // 内嵌 JS 引擎失败不该让整个应用起不来：降级为直通，只是带签名的书源用不了。

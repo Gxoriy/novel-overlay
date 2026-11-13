@@ -103,6 +103,11 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("打开数据库失败: {}", path.display()))?;
+        // 应用多开、或采集探针正在写库时，SQLite 默认立刻返回 `database is locked`。
+        // 启动阶段只是建表和几条短写入，等几秒就能过；不设等待会让整个 setup 失败，
+        // 前端表现为「书源为空 + 每个命令都报 state not managed」。
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("设置数据库忙等超时失败")?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         normalize_text_blobs(&conn)?;
