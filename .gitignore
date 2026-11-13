@@ -8,3 +8,6 @@
 
 # 日志
 *.log
+
+# 书源探针（examples/source_probe）落盘的调试页面
+/novel-overlay/probe/
