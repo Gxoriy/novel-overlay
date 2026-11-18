@@ -104,6 +104,73 @@ pub fn delete_source(state: State<'_, AppState>, id: i64) -> Result<(), String> 
     state.store.delete_source(id).map_err(err)
 }
 
+/// 导出书源 JSON：`id` 为空导出全部（含停用），否则只导出指定书源。
+///
+/// 弹出系统保存对话框，用户取消时返回 `None`；成功返回落盘路径。
+/// 导出内容与导入格式完全一致（阅读兼容字段），导出的文件可以直接再导入。
+#[tauri::command]
+pub fn export_sources(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: Option<i64>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+
+    let sources = match id {
+        Some(id) => vec![state.store.get_source(id).map_err(err)?],
+        None => state.store.all_sources().map_err(err)?,
+    };
+    if sources.is_empty() {
+        return Err("没有可导出的书源".to_string());
+    }
+    // 单个导出为对象、多个导出为数组 —— 两种写法导入时都能解析。
+    let value = serde_json::to_value(&sources).map_err(err)?;
+    let value = match value {
+        serde_json::Value::Array(mut list) if list.len() == 1 => list
+            .pop()
+            .unwrap_or(serde_json::Value::Null),
+        other => other,
+    };
+    let contents = serde_json::to_string_pretty(&value).map_err(err)?;
+
+    let default_name = match id {
+        Some(_) => format!(
+            "{}.json",
+            sanitize_filename(&sources[0].book_source_name)
+        ),
+        None => "novel-overlay-sources.json".to_string(),
+    };
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("书源 JSON", &["json"])
+        .set_file_name(&default_name)
+        .blocking_save_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    // FilePath 可能是 Url 形式，统一转成文件系统路径字符串。
+    let path = match &picked {
+        FilePath::Path(path) => path.display().to_string(),
+        FilePath::Url(url) => url
+            .to_file_path()
+            .map(|path| path.display().to_string())
+            .map_err(|_| format!("无法识别的保存路径: {picked}"))?,
+    };
+    std::fs::write(&path, &contents).map_err(|error| format!("写入 {path} 失败: {error}"))?;
+    Ok(Some(path))
+}
+
+/// Windows 文件名里不允许出现的字符统一换成空格。
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            _ => ch,
+        })
+        .collect()
+}
+
 // ---------- 采集 ----------
 
 #[tauri::command]

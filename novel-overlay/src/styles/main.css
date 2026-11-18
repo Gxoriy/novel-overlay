@@ -707,6 +707,12 @@ button:focus-visible,
   align-self: flex-end;
 }
 
+.source-add-buttons {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
 /* ---------------------------------------------------------------------------
    设置
    --------------------------------------------------------------------------- */

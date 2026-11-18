@@ -17,6 +17,8 @@ export const api = {
   setSourceEnabled: (id: number, enabled: boolean) =>
     invoke<void>("set_source_enabled", { id, enabled }),
   deleteSource: (id: number) => invoke<void>("delete_source", { id }),
+  /** 导出书源 JSON：id 为空导出全部；返回保存路径，用户取消返回 null。 */
+  exportSources: (id: number | null) => invoke<string | null>("export_sources", { id }),
 
   searchNovel: (query: string, sourceId: number | null) =>
     invoke<SearchBook[]>("search_novel", { query, sourceId }),

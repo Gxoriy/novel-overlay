@@ -214,6 +214,8 @@ pub fn run() {
                 })
                 .build(),
         )
+        // 书源导出的系统保存对话框（Rust 端调用，无需前端权限）
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let handle = app.handle().clone();
 
@@ -304,6 +306,7 @@ pub fn run() {
             commands::add_source,
             commands::set_source_enabled,
             commands::delete_source,
+            commands::export_sources,
             commands::search_novel,
             commands::fetch_toc,
             commands::cached_chapter_indices,

@@ -26,6 +26,7 @@ const dom = {
   shelfStatus: q<HTMLDivElement>("#shelf-status"),
   sourceJson: q<HTMLTextAreaElement>("#source-json"),
   sourceImport: q<HTMLButtonElement>("#source-import"),
+  sourceExport: q<HTMLButtonElement>("#source-export"),
   sourceStatus: q<HTMLDivElement>("#source-status"),
   sourceList: q<HTMLUListElement>("#source-list"),
   tocPanel: q<HTMLElement>("#toc-panel"),
@@ -605,6 +606,7 @@ async function refreshSources(): Promise<void> {
             <div class="card-meta"><span>${esc(item.url)}</span></div>
             <div class="card-actions">
               <button class="ghost" data-toggle="${item.id}">${item.enabled ? "停用" : "启用"}</button>
+              <button class="ghost" data-export="${item.id}">导出</button>
               <button class="ghost danger" data-drop="${item.id}">删除</button>
             </div>
           </div>
@@ -748,6 +750,17 @@ function bindEvents(): void {
     onLimitChange(dom.tocCollectLimit, dom.collectLimit),
   );
 
+  /** 导出书源 JSON：弹出系统保存对话框；用户取消时静默返回。 */
+  async function runExport(id: number | null): Promise<void> {
+    const path = await api.exportSources(id);
+    if (!path) {
+      toast("已取消导出");
+      return;
+    }
+    setStatus(dom.sourceStatus, `已导出：${path}`);
+    toast(`已导出到 ${path}`);
+  }
+
   dom.sourceImport.addEventListener("click", () => {
     const raw = dom.sourceJson.value.trim();
     if (!raw) {
@@ -772,6 +785,7 @@ function bindEvents(): void {
     const target = event.target as HTMLElement;
     const toggleId = target.dataset.toggle;
     const dropId = target.dataset.drop;
+    const exportId = target.dataset.export;
     void (async () => {
       try {
         if (toggleId) {
@@ -782,11 +796,17 @@ function bindEvents(): void {
           await api.deleteSource(Number(dropId));
           await refreshSources();
           toast("书源已删除");
+        } else if (exportId) {
+          await runExport(Number(exportId));
         }
       } catch (error) {
         toast(errText(error), "error");
       }
     })();
+  });
+
+  dom.sourceExport.addEventListener("click", () => {
+    void runExport(null).catch((error) => toast(errText(error), "error"));
   });
 
   dom.searchResults.addEventListener("click", (event) => {

@@ -207,6 +207,22 @@ impl Store {
         Ok(out)
     }
 
+    /// 全部书源（含停用的），导出 JSON 用。
+    pub fn all_sources(&self) -> Result<Vec<BookSource>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT payload FROM book_source ORDER BY id")?;
+        let rows = stmt.query_map([], |row| sqlite_text(row, 0))?;
+        let mut out = Vec::new();
+        for (index, row) in rows.enumerate() {
+            let payload = row?;
+            match serde_json::from_str::<BookSource>(&payload) {
+                Ok(source) => out.push(source),
+                Err(err) => log::warn!("跳过无法解析的书源 #{}: {err}", index + 1),
+            }
+        }
+        Ok(out)
+    }
+
     pub fn set_source_enabled(&self, id: i64, enabled: bool) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(

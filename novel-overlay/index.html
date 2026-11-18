@@ -67,7 +67,10 @@
                 spellcheck="false"
                 placeholder='粘贴书源 JSON：单个对象或数组。字段名兼容"阅读"格式（bookSourceName / bookSourceUrl / searchUrl / ruleSearch / ruleBookInfo / ruleToc / ruleContent）'
               ></textarea>
-              <button id="source-import" class="primary">导入</button>
+              <div class="source-add-buttons">
+                <button id="source-import" class="primary">导入</button>
+                <button id="source-export">导出全部</button>
+              </div>
             </div>
           </details>
           <div id="source-status" class="status"></div>
