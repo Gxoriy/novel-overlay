@@ -728,6 +728,10 @@ async function saveSourceEditor(): Promise<void> {
     setStatus(dom.modalStatus, "JSON 格式不正确，未保存");
     return;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    setStatus(dom.modalStatus, "JSON 必须是一个书源对象（不是数组）");
+    return;
+  }
   // 上方「名称 / 地址 / 状态」优先写回 JSON，避免两处显示不一致。
   const name = dom.modalName.value.trim();
   const url = dom.modalUrl.value.trim();

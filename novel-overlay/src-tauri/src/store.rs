@@ -535,6 +535,51 @@ mod tests {
         assert_eq!(store.list_sources().unwrap().len(), 1);
     }
 
+    /// 编辑保存按 id 覆盖：规则、名称、启停都要一起更新，且不新增行。
+    #[test]
+    fn update_source_overwrites_in_place() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.upsert_source(&sample_source()).unwrap();
+
+        let mut edited = sample_source();
+        edited.book_source_name = "改名后的源".into();
+        edited.search_url = "/find?kw={{key}}".into();
+        edited.enabled = false;
+        store.update_source(id, &edited).unwrap();
+
+        let briefs = store.list_sources().unwrap();
+        assert_eq!(briefs.len(), 1, "编辑不应产生新书源");
+        assert_eq!(briefs[0].id, id);
+        assert_eq!(briefs[0].name, "改名后的源");
+        assert!(!briefs[0].enabled);
+
+        let loaded = store.get_source(id).unwrap();
+        assert_eq!(loaded.search_url, "/find?kw={{key}}");
+    }
+
+    /// 编辑时把地址改成与另一书源重复，应如实报错而不是静默覆盖。
+    #[test]
+    fn update_source_rejects_duplicate_url() {
+        let store = Store::open_in_memory().unwrap();
+        let first_id = store.upsert_source(&sample_source()).unwrap();
+
+        let mut other = sample_source();
+        other.book_source_url = "https://other.example.com".into();
+        store.upsert_source(&other).unwrap();
+
+        // 把第一个源改到第二个源已占用的地址，应报 UNIQUE 冲突。
+        let mut conflicting = sample_source();
+        conflicting.book_source_url = "https://other.example.com".into();
+        assert!(store.update_source(first_id, &conflicting).is_err());
+    }
+
+    /// 不存在的 id 要报错，避免「保存成功但其实没写进去」。
+    #[test]
+    fn update_source_unknown_id_is_error() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.update_source(999, &sample_source()).is_err());
+    }
+
     #[test]
     fn shelf_and_cache() {
         let store = Store::open_in_memory().unwrap();
