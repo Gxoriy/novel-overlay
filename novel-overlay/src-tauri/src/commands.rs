@@ -104,18 +104,12 @@ pub fn delete_source(state: State<'_, AppState>, id: i64) -> Result<(), String> 
     state.store.delete_source(id).map_err(err)
 }
 
-/// 导出书源 JSON：`id` 为空导出全部（含停用），否则只导出指定书源。
+/// 取书源 JSON 文本（pretty）：`id` 为空返回全部数组，否则返回单个对象。
 ///
-/// 弹出系统保存对话框，用户取消时返回 `None`；成功返回落盘路径。
-/// 导出内容与导入格式完全一致（阅读兼容字段），导出的文件可以直接再导入。
+/// 给「编辑」弹窗展示用 —— 用户直接复制这段 JSON 就能分享/备份，
+/// 不再需要落盘成文件。格式与导入完全一致。
 #[tauri::command]
-pub fn export_sources(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: Option<i64>,
-) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::{DialogExt, FilePath};
-
+pub fn source_json(state: State<'_, AppState>, id: Option<i64>) -> Result<String, String> {
     let sources = match id {
         Some(id) => vec![state.store.get_source(id).map_err(err)?],
         None => state.store.all_sources().map_err(err)?,
@@ -126,49 +120,34 @@ pub fn export_sources(
     // 单个导出为对象、多个导出为数组 —— 两种写法导入时都能解析。
     let value = serde_json::to_value(&sources).map_err(err)?;
     let value = match value {
-        serde_json::Value::Array(mut list) if list.len() == 1 => list
-            .pop()
-            .unwrap_or(serde_json::Value::Null),
+        serde_json::Value::Array(mut list) if list.len() == 1 => {
+            list.pop().unwrap_or(serde_json::Value::Null)
+        }
         other => other,
     };
-    let contents = serde_json::to_string_pretty(&value).map_err(err)?;
-
-    let default_name = match id {
-        Some(_) => format!(
-            "{}.json",
-            sanitize_filename(&sources[0].book_source_name)
-        ),
-        None => "novel-overlay-sources.json".to_string(),
-    };
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("书源 JSON", &["json"])
-        .set_file_name(&default_name)
-        .blocking_save_file();
-    let Some(picked) = picked else {
-        return Ok(None);
-    };
-    // FilePath 可能是 Url 形式，统一转成文件系统路径字符串。
-    let path = match &picked {
-        FilePath::Path(path) => path.display().to_string(),
-        FilePath::Url(url) => url
-            .to_file_path()
-            .map(|path| path.display().to_string())
-            .map_err(|_| format!("无法识别的保存路径: {picked}"))?,
-    };
-    std::fs::write(&path, &contents).map_err(|error| format!("写入 {path} 失败: {error}"))?;
-    Ok(Some(path))
+    serde_json::to_string_pretty(&value).map_err(err)
 }
 
-/// Windows 文件名里不允许出现的字符统一换成空格。
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|ch| match ch {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
-            _ => ch,
-        })
-        .collect()
+/// 按 id 保存编辑后的书源。JSON 里的字段整体覆盖原规则。
+#[tauri::command]
+pub fn update_source(
+    state: State<'_, AppState>,
+    id: i64,
+    json: String,
+) -> Result<(), String> {
+    let source: BookSource = serde_json::from_str(&json)
+        .map_err(|error| format!("书源 JSON 无法解析: {error}"))?;
+    if source.book_source_url.trim().is_empty() {
+        return Err("书源缺少 bookSourceUrl".to_string());
+    }
+    state.store.update_source(id, &source).map_err(|error| {
+        let text = error.to_string();
+        if text.contains("UNIQUE") {
+            format!("保存失败：书源地址 {} 已被其它书源占用", source.book_source_url)
+        } else {
+            text
+        }
+    })
 }
 
 // ---------- 采集 ----------

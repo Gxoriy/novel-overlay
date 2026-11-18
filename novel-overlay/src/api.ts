@@ -17,8 +17,10 @@ export const api = {
   setSourceEnabled: (id: number, enabled: boolean) =>
     invoke<void>("set_source_enabled", { id, enabled }),
   deleteSource: (id: number) => invoke<void>("delete_source", { id }),
-  /** 导出书源 JSON：id 为空导出全部；返回保存路径，用户取消返回 null。 */
-  exportSources: (id: number | null) => invoke<string | null>("export_sources", { id }),
+  /** 书源 JSON 文本（pretty）：id 为空返回全部数组，否则返回单个对象。 */
+  sourceJson: (id: number | null) => invoke<string>("source_json", { id }),
+  /** 按 id 保存编辑后的书源（JSON 整体覆盖规则）。 */
+  updateSource: (id: number, json: string) => invoke<void>("update_source", { id, json }),
 
   searchNovel: (query: string, sourceId: number | null) =>
     invoke<SearchBook[]>("search_novel", { query, sourceId }),

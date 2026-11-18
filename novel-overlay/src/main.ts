@@ -45,6 +45,16 @@ const dom = {
   dataDirStatus: q<HTMLDivElement>("#data-dir-status"),
   shortcutHint: q<HTMLParagraphElement>("#shortcut-hint"),
   toast: q<HTMLDivElement>("#toast"),
+  sourceModal: q<HTMLDivElement>("#source-modal"),
+  modalTitle: q<HTMLHeadingElement>("#modal-title"),
+  modalName: q<HTMLInputElement>("#modal-name"),
+  modalUrl: q<HTMLInputElement>("#modal-url"),
+  modalEnabled: q<HTMLSelectElement>("#modal-enabled"),
+  modalJson: q<HTMLTextAreaElement>("#modal-json"),
+  modalStatus: q<HTMLDivElement>("#modal-status"),
+  modalCopy: q<HTMLButtonElement>("#modal-copy"),
+  modalCancel: q<HTMLButtonElement>("#modal-cancel"),
+  modalSave: q<HTMLButtonElement>("#modal-save"),
 };
 
 const COLLECT_LIMIT_KEY = "novel-overlay.collect-limit";
@@ -606,7 +616,7 @@ async function refreshSources(): Promise<void> {
             <div class="card-meta"><span>${esc(item.url)}</span></div>
             <div class="card-actions">
               <button class="ghost" data-toggle="${item.id}">${item.enabled ? "停用" : "启用"}</button>
-              <button class="ghost" data-export="${item.id}">导出</button>
+              <button class="ghost" data-edit="${item.id}">编辑</button>
               <button class="ghost danger" data-drop="${item.id}">删除</button>
             </div>
           </div>
@@ -668,6 +678,69 @@ async function saveDataDir(path: string | null): Promise<void> {
   }
 }
 
+// ---------- 书源编辑弹窗 ----------
+
+/** 复制文本到剪贴板；WebView 里 navigator.clipboard 可能被拒，退回 execCommand。 */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
+
+/** 当前正在编辑的书源 id；null 表示弹窗未打开。 */
+let editingSourceId: number | null = null;
+
+async function openSourceEditor(id: number): Promise<void> {
+  const json = await api.sourceJson(id);
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  editingSourceId = id;
+  dom.modalTitle.textContent = "编辑书源";
+  dom.modalName.value = String(parsed.bookSourceName ?? "");
+  dom.modalUrl.value = String(parsed.bookSourceUrl ?? "");
+  dom.modalEnabled.value = parsed.enabled === false ? "0" : "1";
+  dom.modalJson.value = json;
+  setStatus(dom.modalStatus, "");
+  dom.sourceModal.classList.remove("hidden");
+  dom.modalName.focus();
+}
+
+function closeSourceEditor(): void {
+  editingSourceId = null;
+  dom.sourceModal.classList.add("hidden");
+}
+
+async function saveSourceEditor(): Promise<void> {
+  if (editingSourceId === null) return;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(dom.modalJson.value) as Record<string, unknown>;
+  } catch {
+    setStatus(dom.modalStatus, "JSON 格式不正确，未保存");
+    return;
+  }
+  // 上方「名称 / 地址 / 状态」优先写回 JSON，避免两处显示不一致。
+  const name = dom.modalName.value.trim();
+  const url = dom.modalUrl.value.trim();
+  if (name) parsed.bookSourceName = name;
+  if (url) parsed.bookSourceUrl = url;
+  parsed.enabled = dom.modalEnabled.value === "1";
+
+  await api.updateSource(editingSourceId, JSON.stringify(parsed));
+  closeSourceEditor();
+  await refreshSources();
+  toast("书源已保存");
+}
+
 // ---------- 事件绑定 ----------
 
 function bindTabs(): void {
@@ -679,6 +752,10 @@ function bindTabs(): void {
 function bindKeyboard(): void {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (!dom.sourceModal.classList.contains("hidden")) {
+        closeSourceEditor();
+        return;
+      }
       if (!dom.tocPanel.classList.contains("hidden")) {
         closeToc();
         return;
@@ -750,17 +827,6 @@ function bindEvents(): void {
     onLimitChange(dom.tocCollectLimit, dom.collectLimit),
   );
 
-  /** 导出书源 JSON：弹出系统保存对话框；用户取消时静默返回。 */
-  async function runExport(id: number | null): Promise<void> {
-    const path = await api.exportSources(id);
-    if (!path) {
-      toast("已取消导出");
-      return;
-    }
-    setStatus(dom.sourceStatus, `已导出：${path}`);
-    toast(`已导出到 ${path}`);
-  }
-
   dom.sourceImport.addEventListener("click", () => {
     const raw = dom.sourceJson.value.trim();
     if (!raw) {
@@ -785,7 +851,7 @@ function bindEvents(): void {
     const target = event.target as HTMLElement;
     const toggleId = target.dataset.toggle;
     const dropId = target.dataset.drop;
-    const exportId = target.dataset.export;
+    const editId = target.dataset.edit;
     void (async () => {
       try {
         if (toggleId) {
@@ -796,8 +862,8 @@ function bindEvents(): void {
           await api.deleteSource(Number(dropId));
           await refreshSources();
           toast("书源已删除");
-        } else if (exportId) {
-          await runExport(Number(exportId));
+        } else if (editId) {
+          await openSourceEditor(Number(editId));
         }
       } catch (error) {
         toast(errText(error), "error");
@@ -806,7 +872,37 @@ function bindEvents(): void {
   });
 
   dom.sourceExport.addEventListener("click", () => {
-    void runExport(null).catch((error) => toast(errText(error), "error"));
+    void (async () => {
+      try {
+        const json = await api.sourceJson(null);
+        await copyText(json);
+        setStatus(dom.sourceStatus, "全部书源 JSON 已复制到剪贴板");
+        toast(`已复制 ${sources.length} 个书源的 JSON`);
+      } catch (error) {
+        toast(errText(error), "error");
+      }
+    })();
+  });
+
+  dom.modalCopy.addEventListener("click", () => {
+    void (async () => {
+      try {
+        await copyText(dom.modalJson.value);
+        toast("JSON 已复制到剪贴板");
+      } catch (error) {
+        toast(errText(error), "error");
+      }
+    })();
+  });
+  dom.modalCancel.addEventListener("click", closeSourceEditor);
+  dom.modalSave.addEventListener("click", () => {
+    void saveSourceEditor().catch((error) => {
+      setStatus(dom.modalStatus, errText(error));
+    });
+  });
+  // 点遮罩关闭；点面板内部不关。
+  dom.sourceModal.addEventListener("click", (event) => {
+    if (event.target === dom.sourceModal) closeSourceEditor();
   });
 
   dom.searchResults.addEventListener("click", (event) => {

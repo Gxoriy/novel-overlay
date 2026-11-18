@@ -207,6 +207,29 @@ impl Store {
         Ok(out)
     }
 
+    /// 按 id 覆盖书源（编辑保存用）。URL 与其它书源重复时由 UNIQUE 约束报错。
+    pub fn update_source(&self, id: i64, source: &BookSource) -> Result<()> {
+        let payload = serde_json::to_string(source)?;
+        let conn = self.conn()?;
+        let affected = conn.execute(
+            "UPDATE book_source
+             SET name = ?1, url = ?2, payload = ?3, enabled = ?4, updated_at = ?5
+             WHERE id = ?6",
+            params![
+                source.book_source_name,
+                source.book_source_url,
+                payload,
+                source.enabled as i64,
+                now_secs(),
+                id
+            ],
+        )?;
+        if affected == 0 {
+            return Err(anyhow!("书源不存在: id={id}"));
+        }
+        Ok(())
+    }
+
     /// 全部书源（含停用的），导出 JSON 用。
     pub fn all_sources(&self) -> Result<Vec<BookSource>> {
         let conn = self.conn()?;
