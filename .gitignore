@@ -1,3 +1,19 @@
+# 依赖与构建产物
+/node_modules/
+/dist/
+/src-tauri/target/
+/src-tauri/gen/
+/tools/icon/build/
+
+# 默认数据目录（书库数据库）
+/docs/
+
+# 书源探针（examples/source_probe）落盘的调试页面
+/probe/
+
+# 根目录的一次性诊断脚本（写完即删，不进仓库）
+/*.py
+
 # IDE
 .idea/
 .vscode/
@@ -8,10 +24,3 @@
 
 # 日志
 *.log
-
-# 书源探针（examples/source_probe）落盘的调试页面
-/novel-overlay/probe/
-
-# 根目录的一次性诊断脚本（写完即删，不进仓库）
-/*.py
-

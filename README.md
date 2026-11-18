@@ -6,7 +6,7 @@
 
 ## 功能
 
-- **书源管理**：书源是一份 JSON 规则文件（见 [`novel-overlay/sources/`](novel-overlay/sources/)），搜索、目录、正文三层都用同一条规则管道描述，支持 `css:` 选择器、`js:` 片段、正则清洗
+- **书源管理**：书源是一份 JSON 规则文件（见 [`sources/`](sources/)），搜索、目录、正文三层都用同一条规则管道描述，支持 `css:` 选择器、`js:` 片段、正则清洗；书源页可直接编辑并复制 JSON 分享
 - **搜索 / 书架 / 目录 / 下载**：多书源搜索、加入书架、全本下载缓存（SQLite），已下载章节离线可读
 - **阅读浮窗**：透明、置顶、不抢焦点的无边框小窗，全局快捷键呼出/收起，键盘翻页，纯文字模式
 - **合规采集层**：公开网页抓取使用诚实 UA、先查 `robots.txt`、令牌桶限速、失败熔断；按出口 IP 限流的站点可配置代理池轮换
@@ -18,7 +18,6 @@
 前置：[Rust](https://rustup.rs)（stable）、Node.js ≥ 18；Windows 还需 WebView2、macOS 需 Xcode Command Line Tools。
 
 ```bash
-cd novel-overlay
 npm install
 
 # 开发
@@ -82,7 +81,7 @@ npm run tauri build
 写新书源时用探针一步完成「转换 → 实测 → 入库」：
 
 ```bash
-cd novel-overlay/src-tauri
+cd src-tauri
 cargo run --example source_probe -- --json=../sources/<你的书源>.json --keyword=书名
 # 验证通过后追加 --import --db=../docs/novel-overlay.db
 ```
