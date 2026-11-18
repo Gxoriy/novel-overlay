@@ -11,3 +11,7 @@
 
 # 书源探针（examples/source_probe）落盘的调试页面
 /novel-overlay/probe/
+
+# 根目录的一次性诊断脚本（写完即删，不进仓库）
+/*.py
+
