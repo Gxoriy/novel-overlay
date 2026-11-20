@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use encoding_rs::{Encoding, GBK};
@@ -25,6 +25,13 @@ use crate::net::transport::{HttpResponse, PageSource, TextFuture, Transport, Tra
 pub const DEFAULT_USER_AGENT: &str =
     "NovelOverlay/0.1 (personal reading tool; +https://example.invalid/novel-overlay)";
 
+/// 本机自动探测的代理失败后，冷却多久再重新探测。
+///
+/// **端口在监听不等于能用**：Clash 关掉节点后 mixed-port 仍在 listen，
+/// CONNECT 能建起来、TLS 却被直接重置。不冷却的话每个请求都会先撞一次死出口，
+/// 日志里刷满「取不到 robots.txt」，书源表现为整体不可用。
+const LOCAL_PROXY_COOLDOWN: Duration = Duration::from_secs(180);
+
 /// HTTP 出口：限速 + 出口选择 + 字符集解码。
 ///
 /// 这一层**不做任何合规判断**。合规闸门在 [`crate::net::Ladder`] 里，位于它之上；
@@ -40,6 +47,8 @@ pub struct Fetcher {
     /// 未显式配代理时，自动走本机 Clash 等端口；没有监听则直连。
     auto_local: bool,
     local_pool: Mutex<Option<Arc<ProxyPool>>>,
+    /// 自动探测的本机代理被判定不可用后，冷却到什么时候（期间直连）。
+    local_off_until: Mutex<Option<Instant>>,
     limiter: TokenBucket,
 }
 
@@ -55,6 +64,7 @@ impl Fetcher {
             proxies: None,
             auto_local: true,
             local_pool: Mutex::new(None),
+            local_off_until: Mutex::new(None),
             limiter: TokenBucket::with_clock(rate_per_sec, burst, clock),
         })
     }
@@ -109,37 +119,13 @@ impl Fetcher {
         // 限速与出口无关：换出口不重置配额。
         self.limiter.acquire().await;
 
-        let picked = self.pick_exit(url)?;
+        let mut picked = self.pick_exit(url)?;
         let client = match &picked {
             Some((_, spec)) => self.exit_client(spec)?,
             None => self.client.clone(),
         };
 
-        let mut request = match body {
-            Some(body) => {
-                // 表单 POST 的默认 Content-Type；书源没显式声明就自动补上。
-                let mut request = client.post(url).body(body.to_string());
-                if !extra_headers
-                    .iter()
-                    .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
-                {
-                    request = request.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
-                }
-                request
-            }
-            None => client.get(url),
-        };
-        if !extra_headers.is_empty() {
-            let mut headers = HeaderMap::new();
-            for (key, value) in extra_headers {
-                let name = HeaderName::from_bytes(key.as_bytes())
-                    .with_context(|| format!("非法请求头名: {key}"))?;
-                let parsed = HeaderValue::from_str(value)
-                    .with_context(|| format!("非法请求头值: {key} = {value}"))?;
-                headers.insert(name, parsed);
-            }
-            request = request.headers(headers);
-        }
+        let request = build_request(&client, url, extra_headers, body)?;
 
         // 传输层失败归因于**出口**：连接被拒 / 超时 / 代理挂了。
         // 站点层的失败（429 / 503 / 验证码）由 Ladder 的熔断器负责，不在这里记账 ——
@@ -148,7 +134,23 @@ impl Fetcher {
             Ok(response) => response,
             Err(error) => {
                 self.blame_exit(&picked);
-                return Err(error).with_context(|| format!("请求失败: {url}"));
+                if should_fall_back_to_direct(self.proxies.is_some(), picked.is_some()) {
+                    // 自动探测的本机代理只是「有就用」的便利出口，不是用户的隐私承诺。
+                    // 它挂了（端口在听但没有可用节点，TLS 被直接重置）必须退回直连，
+                    // 否则一个空转的 Clash 会让所有书源统一报「取不到 robots.txt」。
+                    self.park_local_exit();
+                    picked = None;
+                    log::warn!("本机代理不可用，改用直连重试: {url}（{error}）");
+                    let direct = build_request(&self.client, url, extra_headers, body)?;
+                    match direct.send().await {
+                        Ok(response) => response,
+                        Err(error) => {
+                            return Err(error).with_context(|| format!("请求失败: {url}"));
+                        }
+                    }
+                } else {
+                    return Err(error).with_context(|| format!("请求失败: {url}"));
+                }
             }
         };
 
@@ -179,34 +181,8 @@ impl Fetcher {
         // 只认这一种响应，一般 403 不重试：那是站点态度，换出口也无济于事。
         if status == 403 && picked.is_some() && is_region_denied(&bytes) {
             log::info!("站点拒绝代理出口地区，改用本机直连重试: {url}");
-            let direct = self.client.clone();
-            let mut retry = match body {
-                Some(body) => {
-                    // 首次请求的 Content-Type 自动补齐逻辑在这里同样要生效，
-                    // 否则直连重试发出去的是没有类型的 POST，表单参数会被丢掉。
-                    let mut retry = direct.post(url).body(body.to_string());
-                    if !extra_headers
-                        .iter()
-                        .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
-                    {
-                        retry = retry.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
-                    }
-                    retry
-                }
-                None => direct.get(url),
-            };
-            if !extra_headers.is_empty() {
-                let mut headers = HeaderMap::new();
-                for (key, value) in extra_headers {
-                    if let (Ok(name), Ok(parsed)) = (
-                        HeaderName::from_bytes(key.as_bytes()),
-                        HeaderValue::from_str(value),
-                    ) {
-                        headers.insert(name, parsed);
-                    }
-                }
-                retry = retry.headers(headers);
-            }
+            // 与首次请求走同一套组包逻辑：POST 的默认 Content-Type、附加头都不能漏。
+            let retry = build_request(&self.client, url, extra_headers, body)?;
             match retry.send().await {
                 Ok(second) => {
                     status = second.status().as_u16();
@@ -260,6 +236,17 @@ impl Fetcher {
     }
 
     fn pick_local_exit(&self, url: &str) -> Option<(Arc<ProxyPool>, ProxySpec)> {
+        // 冷却期内一律直连：死掉的本机代理不该每个请求都再试一次。
+        if let Some(until) = *self
+            .local_off_until
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            if Instant::now() < until {
+                return None;
+            }
+        }
+
         let host = host_of(url);
         let mut guard = self
             .local_pool
@@ -292,6 +279,60 @@ impl Fetcher {
             pool.record_failure(spec);
         }
     }
+
+    /// 停用自动探测的本机代理并进入冷却：冷却期内 `pick_local_exit` 直接返回 None。
+    ///
+    /// 只针对「自动探测」这一条路径；显式代理池（`NOVEL_OVERLAY_PROXIES`）绝不能
+    /// 因为失败而静默改走直连 —— 那会把用户的真实出口漏出去。
+    fn park_local_exit(&self) {
+        *self
+            .local_pool
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .local_off_until
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Instant::now() + LOCAL_PROXY_COOLDOWN);
+    }
+}
+
+/// 按「可选表单体 + 附加头」组装请求。
+///
+/// 首次请求、直连兜底、地区拒绝后的重试都走这里 —— 三处如果各写一遍，
+/// POST 的默认 `Content-Type` 迟早会在某一条路径上被漏掉。
+fn build_request(
+    client: &Client,
+    url: &str,
+    extra_headers: &[(String, String)],
+    body: Option<&str>,
+) -> Result<reqwest::RequestBuilder> {
+    let mut request = match body {
+        Some(body) => {
+            // 表单 POST 的默认 Content-Type；书源没显式声明就自动补上。
+            let mut request = client.post(url).body(body.to_string());
+            if !extra_headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("content-type"))
+            {
+                request = request.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+            }
+            request
+        }
+        None => client.get(url),
+    };
+    if !extra_headers.is_empty() {
+        let mut headers = HeaderMap::new();
+        for (key, value) in extra_headers {
+            let name = HeaderName::from_bytes(key.as_bytes())
+                .with_context(|| format!("非法请求头名: {key}"))?;
+            let parsed = HeaderValue::from_str(value)
+                .with_context(|| format!("非法请求头值: {key} = {value}"))?;
+            headers.insert(name, parsed);
+        }
+        request = request.headers(headers);
+    }
+    Ok(request)
 }
 
 /// 构建客户端。`proxy` 为 `None` 时直连。
@@ -308,6 +349,14 @@ fn build_client(proxy: Option<&str>) -> Result<Client> {
         builder = builder.proxy(parsed);
     }
     builder.build().context("构建 HTTP 客户端失败")
+}
+
+/// 传输层失败后是否退回直连。
+///
+/// 只有「自动探测的本机代理」可以回退：那只是有就用、没有就直连的便利出口。
+/// 显式配置的代理池**绝不**回退 —— 静默直连会把用户的真实出口漏出去。
+fn should_fall_back_to_direct(explicit_pool: bool, picked: bool) -> bool {
+    !explicit_pool && picked
 }
 
 /// 取 URL 的 host，用于 `StickyPerHost` 的粘性键。解析失败时退回整串。
@@ -488,6 +537,36 @@ mod tests {
             );
         }
         assert!(DEFAULT_USER_AGENT.starts_with("NovelOverlay/"));
+    }
+
+    /// 只有自动探测的本机代理允许在传输失败后退回直连。
+    #[test]
+    fn only_auto_local_exits_fall_back_to_direct() {
+        assert!(should_fall_back_to_direct(false, true));
+        assert!(
+            !should_fall_back_to_direct(true, true),
+            "显式代理池不能静默漏真实出口"
+        );
+        assert!(
+            !should_fall_back_to_direct(false, false),
+            "本来就是直连，没有可回退的东西"
+        );
+    }
+
+    /// 本机代理被判死后进入冷却：冷却期内不再探测，直接走直连。
+    #[test]
+    fn parked_local_exit_stops_probing() {
+        let fetcher = Fetcher::new(1000.0, 10).expect("fetcher");
+        fetcher.park_local_exit();
+        assert!(fetcher.pick_local_exit("https://example.com").is_none());
+        assert!(
+            fetcher
+                .local_pool
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none(),
+            "冷却期内不该留着本地代理池"
+        );
     }
 
     /// 配了代理池却没有可用出口时，请求必须**失败**，而不是静默回落直连。

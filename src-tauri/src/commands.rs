@@ -50,8 +50,12 @@ impl AppState {
     }
 }
 
+/// 错误转成前端可显示字符串：用 `{:#}` 展开 anyhow 的整条上下文链。
+///
+/// 只取最外层时，前端只能看到「请求 /api/booklist 失败」，真正的根因
+///（本机代理不可用 → robots.txt 取不到）被吞掉，用户和日志都无从判断。
 fn err<E: std::fmt::Display>(error: E) -> String {
-    error.to_string()
+    format!("{error:#}")
 }
 
 fn parse_sources(raw: &str) -> anyhow::Result<Vec<BookSource>> {

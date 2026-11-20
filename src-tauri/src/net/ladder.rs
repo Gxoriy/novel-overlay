@@ -434,11 +434,13 @@ impl PublicWebTier {
     /// 取不到 robots.txt 时按 RFC 9309 保守处理：
     /// - 2xx → 解析并应用
     /// - 4xx → 视为「站点没有声明限制」
-    /// - 5xx / 网络失败 → 视为**完全禁止**
-    async fn rules_for(&self, url: &str) -> Arc<RobotsRules> {
+    /// - 5xx / 网络失败 → **本次不抓**，并把原因带回调用方
+    ///
+    /// 失败**不进缓存**：上一次因为代理抽风取不到，不代表这个站点永远取不到；
+    /// 缓存下来会变成「一次网络抖动，整个站点永久封禁」。
+    async fn rules_for(&self, url: &str) -> std::result::Result<Arc<RobotsRules>, String> {
         let Some(origin) = origin_of(url) else {
-            // URL 都解析不了，保守禁止。
-            return Arc::new(robots::disallow_all());
+            return Err(format!("地址无法解析: {url}"));
         };
 
         if let Some(found) = self
@@ -448,18 +450,18 @@ impl PublicWebTier {
             .get(&origin)
             .cloned()
         {
-            return found;
+            return Ok(found);
         }
 
-        let rules = Arc::new(self.load_robots(&origin).await);
+        let rules = Arc::new(self.load_robots(&origin).await?);
         self.robots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(origin, rules.clone());
-        rules
+        Ok(rules)
     }
 
-    async fn load_robots(&self, origin: &str) -> RobotsRules {
+    async fn load_robots(&self, origin: &str) -> std::result::Result<RobotsRules, String> {
         let url = format!("{origin}/robots.txt");
         match self.transport.get(&url, &[]).await {
             Ok(response) if (200..300).contains(&response.status) => {
@@ -473,19 +475,19 @@ impl PublicWebTier {
                         );
                     }
                 }
-                rules
+                Ok(rules)
             }
-            Ok(response) if (400..500).contains(&response.status) => robots::unrestricted(),
+            Ok(response) if (400..500).contains(&response.status) => Ok(robots::unrestricted()),
             Ok(response) => {
                 log::warn!(
-                    "{url} 返回 HTTP {}，按保守策略视为完全禁止",
+                    "{url} 返回 HTTP {}，按保守策略跳过本次抓取",
                     response.status
                 );
-                robots::disallow_all()
+                Err(format!("HTTP {}", response.status))
             }
             Err(error) => {
-                log::warn!("取不到 {url}（{error}），按保守策略视为完全禁止");
-                robots::disallow_all()
+                log::warn!("取不到 {url}（{error}），按保守策略跳过本次抓取");
+                Err(error.to_string())
             }
         }
     }
@@ -521,7 +523,18 @@ impl TierSource for PublicWebTier {
             }
 
             // ---- 合规闸门在网络之前 ----
-            let rules = self.rules_for(url).await;
+            let rules = match self.rules_for(url).await {
+                Ok(rules) => rules,
+                Err(reason) => {
+                    // 取不到 robots.txt **不是**「站点禁止抓取」：这是网络/代理故障
+                    // 或站点 5xx。按 RFC 9309 这一次照样不抓，但必须把真实原因带出去，
+                    // 否则用户只看到「robots.txt 禁止」，永远查不到是代理坏了。
+                    self.breaker.release_probe();
+                    return TierOutcome::Failed {
+                        reason: format!("取不到 robots.txt（{reason}），按保守策略跳过本次抓取"),
+                    };
+                }
+            };
             if rules.decide(&self.config.user_agent, url).is_disallowed() {
                 // robots 拒绝不是站点故障，把半开探测名额还回去，不计入熔断。
                 self.breaker.release_probe();
@@ -692,9 +705,12 @@ mod tests {
         assert!(ladder.fetch("https://s/book/1", &[], &[]).await.is_ok());
     }
 
-    /// robots.txt 返回 5xx → 保守处理，视为完全禁止。
+    /// robots.txt 返回 5xx → 本次不抓，但报错必须写清「取不到」而不是「禁止」。
+    ///
+    /// 这两种情况对用户的含义完全不同：前者是网络/代理/站点故障（能修），
+    /// 后者是站点明确拒绝（只能换源）。混成一句会把人带到错误的方向。
     #[tokio::test]
-    async fn broken_robots_disables_conservatively() {
+    async fn broken_robots_is_reported_as_unreachable_not_forbidden() {
         let transport = Arc::new(ScriptedTransport::new());
         transport.push("https://s/robots.txt", 503, "");
         transport.push("https://s/book/1", 200, &long_page(""));
@@ -705,8 +721,34 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(message.contains("robots.txt 禁止"), "实际: {message}");
-        assert_eq!(transport.hits("https://s/book/1"), 0);
+        assert!(message.contains("取不到 robots.txt"), "实际: {message}");
+        assert!(message.contains("HTTP 503"), "实际: {message}");
+        assert!(
+            !message.contains("robots.txt 禁止"),
+            "取不到不能报成禁止: {message}"
+        );
+        assert_eq!(transport.hits("https://s/book/1"), 0, "保守起见不发页面请求");
+    }
+
+    /// robots.txt 取不到的结果不能被永久缓存：代理恢复后要能重新放行。
+    #[tokio::test]
+    async fn failed_robots_lookup_is_not_cached() {
+        let transport = Arc::new(ScriptedTransport::new());
+        transport.push("https://s/robots.txt", 503, "");
+        transport.push("https://s/book/1", 200, &long_page(""));
+        let (ladder, _clock) = web_tier(transport.clone(), true, 3);
+
+        assert!(ladder.fetch("https://s/book/1", &[], &[]).await.is_err());
+        assert_eq!(transport.hits("https://s/robots.txt"), 1);
+
+        // 「代理修好了」：robots 恢复正常，第二次请求应当重新拉一次 robots 并放行。
+        transport.push("https://s/robots.txt", 200, "User-agent: *\nDisallow: /private\n");
+        let fetched = ladder
+            .fetch("https://s/book/1", &[], &[])
+            .await
+            .expect("robots 恢复后应能抓取");
+        assert!(fetched.html.contains("正文段落"));
+        assert_eq!(transport.hits("https://s/robots.txt"), 2, "失败结果不该进缓存");
     }
 
     /// 识别到挑战就停下来熔断 —— 第三次请求应该被熔断挡在本地，不再打站点。
