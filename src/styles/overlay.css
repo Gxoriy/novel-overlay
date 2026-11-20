@@ -129,6 +129,22 @@ body {
   color: #cfe3ff;
 }
 
+/* 自动滚动速度数值：等宽数字，避免加减时宽度跳动把后面的按钮挤来挤去 */
+.tools .speed {
+  min-width: 26px;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: rgba(232, 234, 238, 0.72);
+  cursor: pointer;
+}
+
+.tools .speed:hover {
+  color: #fff;
+}
+
 .viewport {
   flex: 1 1 auto;
   min-height: 0;

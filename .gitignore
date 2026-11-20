@@ -24,3 +24,6 @@
 
 # 日志
 *.log
+
+# 本机 cargo 离线源替换（directory 指向本机 vendor 路径，换机器会失效）
+/src-tauri/.cargo/

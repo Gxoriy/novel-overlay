@@ -1,6 +1,7 @@
 import "./styles/overlay.css";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
+import { planScroll } from "./scroll";
 import type { OverlayChapter } from "./types";
 
 function q<T extends HTMLElement>(sel: string): T {
@@ -19,6 +20,9 @@ const dom = {
   prev: q<HTMLButtonElement>("#prev"),
   play: q<HTMLButtonElement>("#play"),
   next: q<HTMLButtonElement>("#next"),
+  speed: q<HTMLSpanElement>("#speed"),
+  speedDec: q<HTMLButtonElement>("#speed-dec"),
+  speedInc: q<HTMLButtonElement>("#speed-inc"),
   fontDec: q<HTMLButtonElement>("#font-dec"),
   fontInc: q<HTMLButtonElement>("#font-inc"),
   alphaDec: q<HTMLButtonElement>("#alpha-dec"),
@@ -50,6 +54,11 @@ const DEFAULT_PREFS: Prefs = {
   speed: 48,
 };
 
+/** 自动滚动速度的可调范围与每档倍率：8px/s 慢读，320px/s 速览。 */
+const SPEED_MIN = 8;
+const SPEED_MAX = 320;
+const SPEED_FACTOR = 1.25;
+
 function loadPrefs(): Prefs {
   const raw = localStorage.getItem(STORE_KEY);
   if (!raw) return { ...DEFAULT_PREFS };
@@ -61,6 +70,7 @@ function loadPrefs(): Prefs {
 }
 
 const prefs = loadPrefs();
+prefs.speed = clampSpeed(prefs.speed);
 let playing = true;
 let loading = false;
 let currentIndex = -1;
@@ -69,6 +79,15 @@ let endDwellMs = 0;
 /** 文末真正到底后再停一会，避免最后一句还在视野里就翻章 */
 const END_DWELL_MS = 2800;
 const TICK_MS = 33;
+/** 上一帧没落地的亚像素余量（<1px），低速时靠它攒够整像素再滚 */
+let scrollRemainder = 0;
+/** 上一帧的时间戳，用来按真实帧间隔算位移（定时器抖动/被节流时不出偏差） */
+let lastTickAt = 0;
+
+/** 手动改过 scrollTop 之后调用：丢掉旧余量，从新位置重新起步。 */
+function resetScrollFlow(): void {
+  scrollRemainder = 0;
+}
 
 /** 文末垫高，让最后一段能滚到浮窗中部再继续往下「空滚」。 */
 function applyEndPadding(): void {
@@ -134,6 +153,7 @@ function updateProgress(): void {
 
 function render(chapter: OverlayChapter | null): void {
   endDwellMs = 0;
+  resetScrollFlow();
   if (!chapter) {
     dom.chapter.textContent = "未开始阅读";
     dom.text.innerHTML = `<p class="muted">在主窗口的书架或目录里点「阅读」开始。点正文可切换纯透明。</p>`;
@@ -181,6 +201,7 @@ async function step(direction: 1 | -1): Promise<void> {
       direction === 1 ? await api.overlayNextChapter() : await api.overlayPrevChapter();
     if (chapter && chapter.index === currentIndex) {
       dom.viewport.scrollTop = dom.viewport.scrollHeight;
+      resetScrollFlow();
     } else {
       render(chapter);
     }
@@ -197,34 +218,73 @@ async function step(direction: 1 | -1): Promise<void> {
   }
 }
 
+function clampSpeed(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_PREFS.speed;
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(value)));
+}
+
+/** 同步工具栏上的速度数值（- / + 之间那个数字）。 */
+function renderSpeed(): void {
+  dom.speed.textContent = String(prefs.speed);
+  dom.speed.title = `自动滚动 ${prefs.speed} 像素/秒，点击恢复默认`;
+}
+
+function setSpeed(next: number): void {
+  prefs.speed = clampSpeed(next);
+  renderSpeed();
+  savePrefs();
+  syncPlayButton();
+}
+
+/** 按倍率加减一档；到边界时数值不变。 */
+function stepSpeed(direction: 1 | -1): void {
+  setSpeed(prefs.speed * (direction === 1 ? SPEED_FACTOR : 1 / SPEED_FACTOR));
+}
+
 function syncPlayButton(): void {
   dom.play.textContent = playing ? "‖" : "▶";
   const mode = prefs.textOnly ? "纯文字" : "有底板";
   dom.hint.textContent = playing
-    ? `自动滚动 · 空格/小键盘回车·0 暂停 · 点正文=${mode}`
+    ? `自动滚动 ${prefs.speed}px/s · 空格/小键盘回车·0 暂停 · 点正文=${mode}`
     : `已暂停 · 空格/小键盘回车·0 继续 · 点正文=${mode}`;
 }
 
 function tick(): void {
+  const now = performance.now();
+  // 定时器会被节流：按真实间隔算位移，但单帧上限 250ms，避免回到前台时猛跳一大段
+  const elapsed = lastTickAt === 0 ? TICK_MS : Math.min(250, now - lastTickAt);
+  lastTickAt = now;
+
   if (playing && !loading) {
     const viewport = dom.viewport;
     const maxScroll = viewport.scrollHeight - viewport.clientHeight;
     if (maxScroll <= 1) {
       // 一屏装得下（含文末留白后仍装得下）：停一会再翻章
+      scrollRemainder = 0;
       if (currentIndex >= 0) {
-        endDwellMs += TICK_MS;
+        endDwellMs += elapsed;
         if (endDwellMs >= END_DWELL_MS) {
           endDwellMs = 0;
           void step(1);
         }
       }
     } else {
-      viewport.scrollTop += (prefs.speed * TICK_MS) / 1000;
+      // 低速时每帧不足 1px：整像素落地，余量留给下一帧（见 scroll.ts 的说明）
+      const plan = planScroll(
+        viewport.scrollTop,
+        scrollRemainder,
+        (prefs.speed * elapsed) / 1000,
+        maxScroll,
+      );
+      scrollRemainder = plan.remainder;
+      if (plan.scrollTop !== viewport.scrollTop) {
+        viewport.scrollTop = plan.scrollTop;
+      }
       const atEnd =
         viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2;
       if (atEnd) {
         // 最后一段已滚到中部并空滚完留白：再停约 2.8s 才翻章
-        endDwellMs += TICK_MS;
+        endDwellMs += elapsed;
         if (endDwellMs >= END_DWELL_MS) {
           endDwellMs = 0;
           void step(1);
@@ -251,6 +311,20 @@ function bindEvents(): void {
   dom.prev.addEventListener("click", (event) => {
     event.stopPropagation();
     void step(-1);
+  });
+
+  dom.speedDec.addEventListener("click", (event) => {
+    event.stopPropagation();
+    stepSpeed(-1);
+  });
+  dom.speedInc.addEventListener("click", (event) => {
+    event.stopPropagation();
+    stepSpeed(1);
+  });
+  // 数字本身可点：一键回到默认速度，省得一下下点回去。
+  dom.speed.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setSpeed(DEFAULT_PREFS.speed);
   });
   dom.close.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -312,14 +386,20 @@ function bindEvents(): void {
       syncPlayButton();
     } else if (event.code === "ArrowDown") {
       dom.viewport.scrollTop += 48;
+      resetScrollFlow();
     } else if (event.code === "ArrowUp") {
       dom.viewport.scrollTop -= 48;
+      resetScrollFlow();
     } else if (event.code === "ArrowRight") {
       void step(1);
     } else if (event.code === "ArrowLeft") {
       void step(-1);
     } else if (event.code === "KeyT") {
       void setTextOnly(!prefs.textOnly);
+    } else if (event.code === "Minus" || event.code === "NumpadSubtract") {
+      stepSpeed(-1);
+    } else if (event.code === "Equal" || event.code === "NumpadAdd") {
+      stepSpeed(1);
     }
   });
 
@@ -327,6 +407,7 @@ function bindEvents(): void {
     "wheel",
     (event) => {
       dom.viewport.scrollTop += event.deltaY;
+      resetScrollFlow();
       event.preventDefault();
     },
     { passive: false },
@@ -335,10 +416,12 @@ function bindEvents(): void {
 
 async function boot(): Promise<void> {
   applyPrefs();
+  renderSpeed();
   syncPlayButton();
   bindEvents();
   window.addEventListener("resize", () => {
     applyEndPadding();
+    resetScrollFlow();
     updateProgress();
   });
   await refresh();

@@ -2,7 +2,7 @@
   "bookSourceName": "阿卡小说",
   "bookSourceUrl": "https://www.akarap.cc",
   "enabled": true,
-  "searchUrl": "/search.html",
+  "searchUrl": "/search.html?t=<js>Date.now()</js>",
   "searchBody": "s={{urlencode:key}}",
   "ruleSearch": {
     "bookList": "css:ul.txt-list@css:li",
@@ -17,6 +17,6 @@
     "chapterUrl": "attr:href"
   },
   "ruleContent": {
-    "content": "css:div.word_read@css:p:not([style])@text"
+    "content": "css:div.word_read@css:script@html@regex:bb\\('([^']+)'\\)@js:base64Decode(result)"
   }
 }
